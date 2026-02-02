@@ -7,6 +7,11 @@
   <style>
     html, body { margin:0; height:100%; background:#000; overflow:hidden; }
     canvas { display:block; }
+
+    /* IMPORTANT: ensure UI receives taps, not the canvas (Android fix) */
+    canvas { pointer-events: none; }
+    #uiWrap, #uiWrap * { pointer-events: auto; }
+
     #hud {
       position: fixed; left: 12px; top: 10px; color: #9aa;
       font: 12px/1.25 system-ui, Segoe UI, Arial, sans-serif;
@@ -778,265 +783,253 @@
     });
 
     /* ==========================================================
-       OPTION 1 + refinements: touch UI wiring
-       - Uses the same variables/functions already in this file.
-       - Does NOT change rendering/shaders/layout.
+       OPTION 1 + refinements: touch UI wiring (Android-safe)
+       - pointerup (reliable on Android)
+       - single gear toggle handler (no conflicts)
+       - auto-hide after 3s (interaction resets)
+       - presets (Bright / Demo / Night / Reset)
        ========================================================== */
-    const uiBtn   = document.getElementById("uiBtn");
-    const uiPanel = document.getElementById("uiPanel");
-    const uiStatusEl = document.getElementById("uiStatus");
-    const uiMiniEl   = document.getElementById("uiMini");
+    (function initTouchUI(){
+      const uiBtn = document.getElementById("uiBtn");
+      const uiPanel = document.getElementById("uiPanel");
+      const uiStatusEl = document.getElementById("uiStatus");
+      const uiMiniEl = document.getElementById("uiMini");
 
-    let uiHideTimer = null;
+      if (!uiBtn || !uiPanel) {
+        console.warn("Touch UI: uiBtn/uiPanel not found");
+        return;
+      }
 
-    function uiSetStatus(s) {
-      if (uiStatusEl) uiStatusEl.textContent = s;
-      if (uiMiniEl) uiMiniEl.textContent = s;
-    }
+      let hideTimer = null;
 
-    function uiArmAutoHide() {
-      if (uiHideTimer) clearTimeout(uiHideTimer);
-      uiHideTimer = setTimeout(() => {
+      function uiSetStatus(s) {
+        if (uiStatusEl) uiStatusEl.textContent = s;
+        if (uiMiniEl) uiMiniEl.textContent = s;
+      }
+
+      function armAutoHide() {
+        if (hideTimer) clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => {
+          uiPanel.style.display = "none";
+        }, 3000);
+      }
+
+      function showPanel() {
+        uiPanel.style.display = "block";
+        armAutoHide();
+      }
+
+      function hidePanel() {
         uiPanel.style.display = "none";
-      }, 3000);
-    }
-
-    function uiShow() {
-      uiPanel.style.display = "";
-      uiArmAutoHide();
-    }
-
-    function uiHide() {
-      uiPanel.style.display = "none";
-      if (uiHideTimer) { clearTimeout(uiHideTimer); uiHideTimer = null; }
-    }
-
-    uiBtn.addEventListener("click", () => {
-      if (uiPanel.style.display === "none" || uiPanel.style.display === "") {
-        // if empty string, treat as visible; only show when currently none
-        if (uiPanel.style.display === "none") uiShow();
-        else uiHide();
-      } else {
-        uiHide();
+        if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
       }
-      // Above logic can be touchy across browsers; enforce simple toggle:
-      if (uiPanel.style.display === "none") uiShow();
-    });
 
-    // Default state: collapsed
-    uiHide();
-    uiSetStatus("Ready");
-
-    // Preset defaults snapshot (only touches brightness/contrast & light gains)
-    const PRESET_DEFAULTS = {
-      FINAL_GAIN,
-      FINAL_CONTRAST,
-      visOpacity,
-      irOpacity,
-      globeScale,
-      spinSpeed
-      // NOTE: we do not hard-reset sun intensities here because auto-brightness manages them.
-    };
-
-    function applyPreset(which) {
-      // Presets only modify post-gain/contrast (and optionally vis/IR opacity).
-      // Auto brightness continues to operate unchanged.
-      if (which === "Bright") {
-        FINAL_GAIN = 2.10;
-        FINAL_CONTRAST = 1.10;
-        uiSetStatus(`Preset Bright • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
-        return;
+      function togglePanel() {
+        if (uiPanel.style.display === "none" || uiPanel.style.display === "") showPanel();
+        else hidePanel();
       }
-      if (which === "Demo") {
-        FINAL_GAIN = 2.25;
-        FINAL_CONTRAST = 1.12;
-        // Make clouds pop slightly in demo mode without changing shader code:
-        visOpacity = Math.min(1.0, Math.max(visOpacity, 0.85));
-        irOpacity  = Math.min(1.0, Math.max(irOpacity,  0.60));
-        cloudUniforms.uVisOpacity.value = visOpacity;
-        cloudUniforms.uIrOpacity.value  = irOpacity;
-        uiSetStatus(`Preset Demo • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
-        return;
-      }
-      if (which === "Night") {
-        FINAL_GAIN = 2.35;
-        FINAL_CONTRAST = 1.18;
-        uiSetStatus(`Preset Night • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
-        return;
-      }
-      if (which === "Reset") {
-        FINAL_GAIN = PRESET_DEFAULTS.FINAL_GAIN;
-        FINAL_CONTRAST = PRESET_DEFAULTS.FINAL_CONTRAST;
-        visOpacity = PRESET_DEFAULTS.visOpacity;
-        irOpacity  = PRESET_DEFAULTS.irOpacity;
-        globeScale = PRESET_DEFAULTS.globeScale;
-        spinSpeed  = PRESET_DEFAULTS.spinSpeed;
-        cloudUniforms.uVisOpacity.value = visOpacity;
-        cloudUniforms.uIrOpacity.value  = irOpacity;
-        uiSetStatus("Preset Reset");
-        return;
-      }
-    }
 
-    // Touch command handler (mirrors existing keyboard operations)
-    async function runCmd(cmd) {
-      uiArmAutoHide();
+      // Default state: collapsed
+      hidePanel();
+      uiSetStatus("Ready");
 
-      const stepSmall = 5;
-      const stepBig = 15;
+      // Snapshot defaults for preset reset
+      const PRESET_DEFAULTS = {
+        FINAL_GAIN,
+        FINAL_CONTRAST,
+        visOpacity,
+        irOpacity,
+        globeScale,
+        spinSpeed
+      };
 
-      switch (cmd) {
-        case "close":
-          uiHide();
+      function applyPreset(which) {
+        if (which === "Bright") {
+          FINAL_GAIN = 2.10;
+          FINAL_CONTRAST = 1.10;
+          uiSetStatus(`Preset Bright • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
           return;
-
-        case "hud":
-          hud.style.display = (hud.style.display === "none" ? "" : "none");
-          uiSetStatus(`HUD: ${hud.style.display === "none" ? "off" : "on"}`);
-          return;
-
-        case "refresh":
-          uiSetStatus("Refreshing clouds…");
-          await refreshClouds();
-          uiSetStatus("Clouds refreshed");
-          return;
-
-        case "bright+":
-          FINAL_GAIN = Math.min(3.0, FINAL_GAIN + 0.10);
-          uiSetStatus(`Brightness gain: ${FINAL_GAIN.toFixed(2)}`);
-          return;
-
-        case "bright-":
-          FINAL_GAIN = Math.max(0.5, FINAL_GAIN - 0.10);
-          uiSetStatus(`Brightness gain: ${FINAL_GAIN.toFixed(2)}`);
-          return;
-
-        case "contrast+":
-          FINAL_CONTRAST = Math.min(2.0, FINAL_CONTRAST + 0.05);
-          uiSetStatus(`Contrast: ${FINAL_CONTRAST.toFixed(2)}`);
-          return;
-
-        case "contrast-":
-          FINAL_CONTRAST = Math.max(0.8, FINAL_CONTRAST - 0.05);
-          uiSetStatus(`Contrast: ${FINAL_CONTRAST.toFixed(2)}`);
-          return;
-
-        case "size+":
-          globeScale = Math.min(1.15, globeScale + 0.03);
-          uiSetStatus(`Size: ${globeScale.toFixed(2)}`);
-          return;
-
-        case "size-":
-          globeScale = Math.max(0.55, globeScale - 0.03);
-          uiSetStatus(`Size: ${globeScale.toFixed(2)}`);
-          return;
-
-        case "speed+":
-          spinSpeed = Math.min(1.2, spinSpeed + 0.03);
-          uiSetStatus(`Speed: ${spinSpeed.toFixed(2)}`);
-          return;
-
-        case "speed-":
-          spinSpeed = Math.max(0.02, spinSpeed - 0.03);
-          uiSetStatus(`Speed: ${spinSpeed.toFixed(2)}`);
-          return;
-
-        case "vis+":
-          visOpacity = Math.min(1.0, visOpacity + 0.05);
+        }
+        if (which === "Demo") {
+          FINAL_GAIN = 2.25;
+          FINAL_CONTRAST = 1.12;
+          visOpacity = Math.min(1.0, Math.max(visOpacity, 0.85));
+          irOpacity  = Math.min(1.0, Math.max(irOpacity,  0.60));
           cloudUniforms.uVisOpacity.value = visOpacity;
-          uiSetStatus(`Visible opacity: ${Math.round(visOpacity * 100)}%`);
+          cloudUniforms.uIrOpacity.value  = irOpacity;
+          uiSetStatus(`Preset Demo • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
           return;
-
-        case "vis-":
-          visOpacity = Math.max(0.0, visOpacity - 0.05);
+        }
+        if (which === "Night") {
+          FINAL_GAIN = 2.35;
+          FINAL_CONTRAST = 1.18;
+          uiSetStatus(`Preset Night • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
+          return;
+        }
+        if (which === "Reset") {
+          FINAL_GAIN = PRESET_DEFAULTS.FINAL_GAIN;
+          FINAL_CONTRAST = PRESET_DEFAULTS.FINAL_CONTRAST;
+          visOpacity = PRESET_DEFAULTS.visOpacity;
+          irOpacity  = PRESET_DEFAULTS.irOpacity;
+          globeScale = PRESET_DEFAULTS.globeScale;
+          spinSpeed  = PRESET_DEFAULTS.spinSpeed;
           cloudUniforms.uVisOpacity.value = visOpacity;
-          uiSetStatus(`Visible opacity: ${Math.round(visOpacity * 100)}%`);
+          cloudUniforms.uIrOpacity.value  = irOpacity;
+          uiSetStatus("Preset Reset");
           return;
-
-        case "ir+":
-          irOpacity = Math.min(1.0, irOpacity + 0.05);
-          cloudUniforms.uIrOpacity.value = irOpacity;
-          uiSetStatus(`IR opacity: ${Math.round(irOpacity * 100)}%`);
-          return;
-
-        case "ir-":
-          irOpacity = Math.max(0.0, irOpacity - 0.05);
-          cloudUniforms.uIrOpacity.value = irOpacity;
-          uiSetStatus(`IR opacity: ${Math.round(irOpacity * 100)}%`);
-          return;
-
-        case "sunToggle":
-          if (sunMode === SunMode.REAL) {
-            sunMode = SunMode.MANUAL;
-            syncManualFromCurrentSun();
-            uiSetStatus(`Sun: MANUAL (use arrows)`);
-          } else {
-            sunMode = SunMode.REAL;
-            updateSunFromDate(new Date());
-            uiSetStatus(`Sun: REAL (UTC now)`);
-          }
-          return;
-
-        case "sunLeft":
-          if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch to MANUAL)"); return; }
-          setSunFromLonLat(sunLon - stepSmall, sunLat);
-          uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
-          return;
-
-        case "sunRight":
-          if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch to MANUAL)"); return; }
-          setSunFromLonLat(sunLon + stepSmall, sunLat);
-          uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
-          return;
-
-        case "sunUp":
-          if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch to MANUAL)"); return; }
-          setSunFromLonLat(sunLon, sunLat + stepSmall);
-          uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
-          return;
-
-        case "sunDown":
-          if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch to MANUAL)"); return; }
-          setSunFromLonLat(sunLon, sunLat - stepSmall);
-          uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
-          return;
-
-        case "presetBright":
-          applyPreset("Bright");
-          return;
-
-        case "presetDemo":
-          applyPreset("Demo");
-          return;
-
-        case "presetNight":
-          applyPreset("Night");
-          return;
-
-        case "presetReset":
-          applyPreset("Reset");
-          return;
+        }
       }
-    }
 
-    // Open/close panel with Settings button (refinement #2)
-    uiBtn.addEventListener("click", () => {
-      if (uiPanel.style.display === "none") uiShow();
-      else uiHide();
-    });
+      async function runCmd(cmd) {
+        armAutoHide();
 
-    // Buttons inside panel
-    uiPanel.addEventListener("click", (ev) => {
-      const btn = ev.target.closest("button[data-cmd]");
-      if (!btn) return;
-      runCmd(btn.getAttribute("data-cmd"));
-    });
+        switch (cmd) {
+          case "close":
+            hidePanel();
+            return;
 
-    // Any interaction keeps it alive (refinement #1)
-    ["pointerdown", "pointermove", "touchstart", "wheel"].forEach(evtName => {
-      uiPanel.addEventListener(evtName, () => uiArmAutoHide(), { passive: true });
-      uiBtn.addEventListener(evtName, () => uiArmAutoHide(), { passive: true });
-    });
+          case "hud":
+            hud.style.display = (hud.style.display === "none" ? "" : "none");
+            uiSetStatus(`HUD: ${hud.style.display === "none" ? "off" : "on"}`);
+            return;
+
+          case "refresh":
+            uiSetStatus("Refreshing clouds…");
+            await refreshClouds();
+            uiSetStatus("Clouds refreshed");
+            return;
+
+          case "bright+":
+            FINAL_GAIN = Math.min(3.0, FINAL_GAIN + 0.10);
+            uiSetStatus(`Brightness gain: ${FINAL_GAIN.toFixed(2)}`);
+            return;
+
+          case "bright-":
+            FINAL_GAIN = Math.max(0.5, FINAL_GAIN - 0.10);
+            uiSetStatus(`Brightness gain: ${FINAL_GAIN.toFixed(2)}`);
+            return;
+
+          case "contrast+":
+            FINAL_CONTRAST = Math.min(2.0, FINAL_CONTRAST + 0.05);
+            uiSetStatus(`Contrast: ${FINAL_CONTRAST.toFixed(2)}`);
+            return;
+
+          case "contrast-":
+            FINAL_CONTRAST = Math.max(0.8, FINAL_CONTRAST - 0.05);
+            uiSetStatus(`Contrast: ${FINAL_CONTRAST.toFixed(2)}`);
+            return;
+
+          case "size+":
+            globeScale = Math.min(1.15, globeScale + 0.03);
+            uiSetStatus(`Size: ${globeScale.toFixed(2)}`);
+            return;
+
+          case "size-":
+            globeScale = Math.max(0.55, globeScale - 0.03);
+            uiSetStatus(`Size: ${globeScale.toFixed(2)}`);
+            return;
+
+          case "speed+":
+            spinSpeed = Math.min(1.2, spinSpeed + 0.03);
+            uiSetStatus(`Speed: ${spinSpeed.toFixed(2)}`);
+            return;
+
+          case "speed-":
+            spinSpeed = Math.max(0.02, spinSpeed - 0.03);
+            uiSetStatus(`Speed: ${spinSpeed.toFixed(2)}`);
+            return;
+
+          case "vis+":
+            visOpacity = Math.min(1.0, visOpacity + 0.05);
+            cloudUniforms.uVisOpacity.value = visOpacity;
+            uiSetStatus(`Visible opacity: ${Math.round(visOpacity * 100)}%`);
+            return;
+
+          case "vis-":
+            visOpacity = Math.max(0.0, visOpacity - 0.05);
+            cloudUniforms.uVisOpacity.value = visOpacity;
+            uiSetStatus(`Visible opacity: ${Math.round(visOpacity * 100)}%`);
+            return;
+
+          case "ir+":
+            irOpacity = Math.min(1.0, irOpacity + 0.05);
+            cloudUniforms.uIrOpacity.value = irOpacity;
+            uiSetStatus(`IR opacity: ${Math.round(irOpacity * 100)}%`);
+            return;
+
+          case "ir-":
+            irOpacity = Math.max(0.0, irOpacity - 0.05);
+            cloudUniforms.uIrOpacity.value = irOpacity;
+            uiSetStatus(`IR opacity: ${Math.round(irOpacity * 100)}%`);
+            return;
+
+          case "sunToggle":
+            if (sunMode === SunMode.REAL) {
+              sunMode = SunMode.MANUAL;
+              syncManualFromCurrentSun();
+              uiSetStatus("Sun: MANUAL (use arrows)");
+            } else {
+              sunMode = SunMode.REAL;
+              updateSunFromDate(new Date());
+              uiSetStatus("Sun: REAL (UTC now)");
+            }
+            return;
+
+          case "sunLeft":
+            if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch)"); return; }
+            setSunFromLonLat(sunLon - 5, sunLat);
+            uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+            return;
+
+          case "sunRight":
+            if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch)"); return; }
+            setSunFromLonLat(sunLon + 5, sunLat);
+            uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+            return;
+
+          case "sunUp":
+            if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch)"); return; }
+            setSunFromLonLat(sunLon, sunLat + 5);
+            uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+            return;
+
+          case "sunDown":
+            if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch)"); return; }
+            setSunFromLonLat(sunLon, sunLat - 5);
+            uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+            return;
+
+          case "presetBright": applyPreset("Bright"); return;
+          case "presetDemo":   applyPreset("Demo");   return;
+          case "presetNight":  applyPreset("Night");  return;
+          case "presetReset":  applyPreset("Reset");  return;
+        }
+      }
+
+      // Gear toggle: pointerup is most reliable on Android
+      uiBtn.addEventListener("pointerup", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        togglePanel();
+      }, { passive: false });
+
+      // Panel buttons: pointerup
+      uiPanel.addEventListener("pointerup", (ev) => {
+        const btn = ev.target.closest("button[data-cmd]");
+        if (!btn) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        runCmd(btn.getAttribute("data-cmd"));
+      }, { passive: false });
+
+      // Keep panel alive while interacting (auto-hide refinement #1)
+      ["pointerdown", "pointermove", "touchstart", "wheel"].forEach(evtName => {
+        uiPanel.addEventListener(evtName, () => armAutoHide(), { passive: true });
+        uiBtn.addEventListener(evtName, () => armAutoHide(), { passive: true });
+      });
+
+      console.log("Touch UI initialised");
+    })();
   </script>
 </body>
 </html>
