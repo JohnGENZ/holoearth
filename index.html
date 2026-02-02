@@ -16,6 +16,89 @@
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     #hud b { color:#cfe; }
+
+    /* ==========================================================
+       OPTION 1: Touch controls overlay (Android-friendly)
+       Refinements:
+         (1) Auto-hide after 3s (activity resets timer)
+         (2) Single Settings button expands/collapses
+         (3) Presets (Bright / Demo / Night)
+       ========================================================== */
+    #uiWrap {
+      position: fixed;
+      right: 10px;
+      bottom: 10px;
+      z-index: 1000;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 8px;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: manipulation;
+    }
+    #uiBtn {
+      width: 48px;
+      height: 48px;
+      border-radius: 14px;
+      border: 1px solid rgba(255,255,255,0.18);
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      font: 18px/1 system-ui, Segoe UI, Arial, sans-serif;
+      display: grid;
+      place-items: center;
+      box-shadow: 0 6px 18px rgba(0,0,0,0.35);
+    }
+    #uiPanel {
+      display: none; /* collapsed by default */
+      width: min(340px, calc(100vw - 20px));
+      background: rgba(0,0,0,0.40);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 14px;
+      padding: 10px;
+      color: #dbe;
+      font: 12px/1.25 system-ui, Segoe UI, Arial, sans-serif;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+      backdrop-filter: blur(6px);
+      -webkit-backdrop-filter: blur(6px);
+    }
+    #uiPanel .title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 6px;
+    }
+    #uiPanel .title b { color: #cfe; }
+    #uiPanel .mini {
+      opacity: 0.85;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 260px;
+    }
+    #uiPanel .row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin-top: 8px;
+    }
+    #uiPanel button {
+      border: 1px solid rgba(255,255,255,0.14);
+      background: rgba(255,255,255,0.12);
+      color: #fff;
+      border-radius: 10px;
+      padding: 10px 8px;
+      font: 14px/1 system-ui, Segoe UI, Arial, sans-serif;
+    }
+    #uiPanel button.wide { grid-column: span 2; }
+    #uiPanel .status {
+      opacity: 0.85;
+      margin-top: 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
   </style>
 </head>
 <body>
@@ -23,6 +106,64 @@
     <b>HoloEarth</b> – Blue Marble + RealEarth clouds (globalvis.map day / IR night) + auto brightness + city lights
     • keys: [ / ] size, - / = speed, C refresh, H HUD, O/P vis, K/L ir, T sun mode, arrows move sun (manual), B/N brightness, M/, contrast<br/>
     Status: loading…
+  </div>
+
+  <!-- OPTION 1: Touch UI overlay (Android). Everything else unchanged. -->
+  <div id="uiWrap" aria-label="Touch controls">
+    <button id="uiBtn" title="Settings">⚙</button>
+
+    <div id="uiPanel">
+      <div class="title">
+        <b>Controls</b>
+        <div class="mini" id="uiMini">Ready</div>
+      </div>
+
+      <div class="row">
+        <button data-cmd="bright+">☀+</button>
+        <button data-cmd="bright-">☀−</button>
+        <button data-cmd="contrast+">◐+</button>
+        <button data-cmd="contrast-">◐−</button>
+      </div>
+
+      <div class="row">
+        <button data-cmd="size+">Size+</button>
+        <button data-cmd="size-">Size−</button>
+        <button data-cmd="speed+">Speed+</button>
+        <button data-cmd="speed-">Speed−</button>
+      </div>
+
+      <div class="row">
+        <button data-cmd="vis+">Vis+</button>
+        <button data-cmd="vis-">Vis−</button>
+        <button data-cmd="ir+">IR+</button>
+        <button data-cmd="ir-">IR−</button>
+      </div>
+
+      <div class="row">
+        <button data-cmd="sunToggle">Sun</button>
+        <button data-cmd="sunLeft">←</button>
+        <button data-cmd="sunRight">→</button>
+        <button data-cmd="sunUp">↑</button>
+      </div>
+
+      <div class="row">
+        <button data-cmd="sunDown">↓</button>
+        <button data-cmd="refresh">☁</button>
+        <button data-cmd="hud">HUD</button>
+        <button data-cmd="close">Close</button>
+      </div>
+
+      <div class="row">
+        <button class="wide" data-cmd="presetBright">Bright</button>
+        <button class="wide" data-cmd="presetDemo">Demo</button>
+      </div>
+      <div class="row">
+        <button class="wide" data-cmd="presetNight">Night</button>
+        <button class="wide" data-cmd="presetReset">Reset</button>
+      </div>
+
+      <div class="status" id="uiStatus">Ready</div>
+    </div>
   </div>
 
   <script type="module">
@@ -102,6 +243,11 @@
     function setStatus(msg) {
       const lines = hud.innerHTML.split("<br/>");
       hud.innerHTML = `${lines[0]}<br/>Status: ${msg}`;
+      // Also mirror to touch UI status (if present)
+      const uiStatus = document.getElementById("uiStatus");
+      const uiMini = document.getElementById("uiMini");
+      if (uiStatus) uiStatus.textContent = msg;
+      if (uiMini) uiMini.textContent = msg;
     }
 
     // =========================
@@ -629,6 +775,267 @@
       if (sunMode === SunMode.REAL && (e.key === "r" || e.key === "R")) {
         updateSunFromDate(new Date());
       }
+    });
+
+    /* ==========================================================
+       OPTION 1 + refinements: touch UI wiring
+       - Uses the same variables/functions already in this file.
+       - Does NOT change rendering/shaders/layout.
+       ========================================================== */
+    const uiBtn   = document.getElementById("uiBtn");
+    const uiPanel = document.getElementById("uiPanel");
+    const uiStatusEl = document.getElementById("uiStatus");
+    const uiMiniEl   = document.getElementById("uiMini");
+
+    let uiHideTimer = null;
+
+    function uiSetStatus(s) {
+      if (uiStatusEl) uiStatusEl.textContent = s;
+      if (uiMiniEl) uiMiniEl.textContent = s;
+    }
+
+    function uiArmAutoHide() {
+      if (uiHideTimer) clearTimeout(uiHideTimer);
+      uiHideTimer = setTimeout(() => {
+        uiPanel.style.display = "none";
+      }, 3000);
+    }
+
+    function uiShow() {
+      uiPanel.style.display = "";
+      uiArmAutoHide();
+    }
+
+    function uiHide() {
+      uiPanel.style.display = "none";
+      if (uiHideTimer) { clearTimeout(uiHideTimer); uiHideTimer = null; }
+    }
+
+    uiBtn.addEventListener("click", () => {
+      if (uiPanel.style.display === "none" || uiPanel.style.display === "") {
+        // if empty string, treat as visible; only show when currently none
+        if (uiPanel.style.display === "none") uiShow();
+        else uiHide();
+      } else {
+        uiHide();
+      }
+      // Above logic can be touchy across browsers; enforce simple toggle:
+      if (uiPanel.style.display === "none") uiShow();
+    });
+
+    // Default state: collapsed
+    uiHide();
+    uiSetStatus("Ready");
+
+    // Preset defaults snapshot (only touches brightness/contrast & light gains)
+    const PRESET_DEFAULTS = {
+      FINAL_GAIN,
+      FINAL_CONTRAST,
+      visOpacity,
+      irOpacity,
+      globeScale,
+      spinSpeed
+      // NOTE: we do not hard-reset sun intensities here because auto-brightness manages them.
+    };
+
+    function applyPreset(which) {
+      // Presets only modify post-gain/contrast (and optionally vis/IR opacity).
+      // Auto brightness continues to operate unchanged.
+      if (which === "Bright") {
+        FINAL_GAIN = 2.10;
+        FINAL_CONTRAST = 1.10;
+        uiSetStatus(`Preset Bright • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
+        return;
+      }
+      if (which === "Demo") {
+        FINAL_GAIN = 2.25;
+        FINAL_CONTRAST = 1.12;
+        // Make clouds pop slightly in demo mode without changing shader code:
+        visOpacity = Math.min(1.0, Math.max(visOpacity, 0.85));
+        irOpacity  = Math.min(1.0, Math.max(irOpacity,  0.60));
+        cloudUniforms.uVisOpacity.value = visOpacity;
+        cloudUniforms.uIrOpacity.value  = irOpacity;
+        uiSetStatus(`Preset Demo • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
+        return;
+      }
+      if (which === "Night") {
+        FINAL_GAIN = 2.35;
+        FINAL_CONTRAST = 1.18;
+        uiSetStatus(`Preset Night • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
+        return;
+      }
+      if (which === "Reset") {
+        FINAL_GAIN = PRESET_DEFAULTS.FINAL_GAIN;
+        FINAL_CONTRAST = PRESET_DEFAULTS.FINAL_CONTRAST;
+        visOpacity = PRESET_DEFAULTS.visOpacity;
+        irOpacity  = PRESET_DEFAULTS.irOpacity;
+        globeScale = PRESET_DEFAULTS.globeScale;
+        spinSpeed  = PRESET_DEFAULTS.spinSpeed;
+        cloudUniforms.uVisOpacity.value = visOpacity;
+        cloudUniforms.uIrOpacity.value  = irOpacity;
+        uiSetStatus("Preset Reset");
+        return;
+      }
+    }
+
+    // Touch command handler (mirrors existing keyboard operations)
+    async function runCmd(cmd) {
+      uiArmAutoHide();
+
+      const stepSmall = 5;
+      const stepBig = 15;
+
+      switch (cmd) {
+        case "close":
+          uiHide();
+          return;
+
+        case "hud":
+          hud.style.display = (hud.style.display === "none" ? "" : "none");
+          uiSetStatus(`HUD: ${hud.style.display === "none" ? "off" : "on"}`);
+          return;
+
+        case "refresh":
+          uiSetStatus("Refreshing clouds…");
+          await refreshClouds();
+          uiSetStatus("Clouds refreshed");
+          return;
+
+        case "bright+":
+          FINAL_GAIN = Math.min(3.0, FINAL_GAIN + 0.10);
+          uiSetStatus(`Brightness gain: ${FINAL_GAIN.toFixed(2)}`);
+          return;
+
+        case "bright-":
+          FINAL_GAIN = Math.max(0.5, FINAL_GAIN - 0.10);
+          uiSetStatus(`Brightness gain: ${FINAL_GAIN.toFixed(2)}`);
+          return;
+
+        case "contrast+":
+          FINAL_CONTRAST = Math.min(2.0, FINAL_CONTRAST + 0.05);
+          uiSetStatus(`Contrast: ${FINAL_CONTRAST.toFixed(2)}`);
+          return;
+
+        case "contrast-":
+          FINAL_CONTRAST = Math.max(0.8, FINAL_CONTRAST - 0.05);
+          uiSetStatus(`Contrast: ${FINAL_CONTRAST.toFixed(2)}`);
+          return;
+
+        case "size+":
+          globeScale = Math.min(1.15, globeScale + 0.03);
+          uiSetStatus(`Size: ${globeScale.toFixed(2)}`);
+          return;
+
+        case "size-":
+          globeScale = Math.max(0.55, globeScale - 0.03);
+          uiSetStatus(`Size: ${globeScale.toFixed(2)}`);
+          return;
+
+        case "speed+":
+          spinSpeed = Math.min(1.2, spinSpeed + 0.03);
+          uiSetStatus(`Speed: ${spinSpeed.toFixed(2)}`);
+          return;
+
+        case "speed-":
+          spinSpeed = Math.max(0.02, spinSpeed - 0.03);
+          uiSetStatus(`Speed: ${spinSpeed.toFixed(2)}`);
+          return;
+
+        case "vis+":
+          visOpacity = Math.min(1.0, visOpacity + 0.05);
+          cloudUniforms.uVisOpacity.value = visOpacity;
+          uiSetStatus(`Visible opacity: ${Math.round(visOpacity * 100)}%`);
+          return;
+
+        case "vis-":
+          visOpacity = Math.max(0.0, visOpacity - 0.05);
+          cloudUniforms.uVisOpacity.value = visOpacity;
+          uiSetStatus(`Visible opacity: ${Math.round(visOpacity * 100)}%`);
+          return;
+
+        case "ir+":
+          irOpacity = Math.min(1.0, irOpacity + 0.05);
+          cloudUniforms.uIrOpacity.value = irOpacity;
+          uiSetStatus(`IR opacity: ${Math.round(irOpacity * 100)}%`);
+          return;
+
+        case "ir-":
+          irOpacity = Math.max(0.0, irOpacity - 0.05);
+          cloudUniforms.uIrOpacity.value = irOpacity;
+          uiSetStatus(`IR opacity: ${Math.round(irOpacity * 100)}%`);
+          return;
+
+        case "sunToggle":
+          if (sunMode === SunMode.REAL) {
+            sunMode = SunMode.MANUAL;
+            syncManualFromCurrentSun();
+            uiSetStatus(`Sun: MANUAL (use arrows)`);
+          } else {
+            sunMode = SunMode.REAL;
+            updateSunFromDate(new Date());
+            uiSetStatus(`Sun: REAL (UTC now)`);
+          }
+          return;
+
+        case "sunLeft":
+          if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch to MANUAL)"); return; }
+          setSunFromLonLat(sunLon - stepSmall, sunLat);
+          uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+          return;
+
+        case "sunRight":
+          if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch to MANUAL)"); return; }
+          setSunFromLonLat(sunLon + stepSmall, sunLat);
+          uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+          return;
+
+        case "sunUp":
+          if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch to MANUAL)"); return; }
+          setSunFromLonLat(sunLon, sunLat + stepSmall);
+          uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+          return;
+
+        case "sunDown":
+          if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch to MANUAL)"); return; }
+          setSunFromLonLat(sunLon, sunLat - stepSmall);
+          uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+          return;
+
+        case "presetBright":
+          applyPreset("Bright");
+          return;
+
+        case "presetDemo":
+          applyPreset("Demo");
+          return;
+
+        case "presetNight":
+          applyPreset("Night");
+          return;
+
+        case "presetReset":
+          applyPreset("Reset");
+          return;
+      }
+    }
+
+    // Open/close panel with Settings button (refinement #2)
+    uiBtn.addEventListener("click", () => {
+      if (uiPanel.style.display === "none") uiShow();
+      else uiHide();
+    });
+
+    // Buttons inside panel
+    uiPanel.addEventListener("click", (ev) => {
+      const btn = ev.target.closest("button[data-cmd]");
+      if (!btn) return;
+      runCmd(btn.getAttribute("data-cmd"));
+    });
+
+    // Any interaction keeps it alive (refinement #1)
+    ["pointerdown", "pointermove", "touchstart", "wheel"].forEach(evtName => {
+      uiPanel.addEventListener(evtName, () => uiArmAutoHide(), { passive: true });
+      uiBtn.addEventListener(evtName, () => uiArmAutoHide(), { passive: true });
     });
   </script>
 </body>
