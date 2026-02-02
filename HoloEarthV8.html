@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>HoloEarth – Blue Marble + RealEarth Clouds + Auto Brightness + City Lights – Hologram Pyramid</title>
+  <style>
+    html, body { margin:0; height:100%; background:#000; overflow:hidden; }
+    canvas { display:block; }
+    #hud {
+      position: fixed; left: 12px; top: 10px; color: #9aa;
+      font: 12px/1.25 system-ui, Segoe UI, Arial, sans-serif;
+      user-select:none; opacity:0.86;
+      background: rgba(0,0,0,0.35); padding: 8px 10px; border-radius: 10px;
+      max-width: calc(100vw - 24px);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #hud b { color:#cfe; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <b>HoloEarth</b> – Blue Marble + RealEarth clouds (globalvis.map day / IR night) + auto brightness + city lights
+    • keys: [ / ] size, - / = speed, C refresh, H HUD, O/P vis, K/L ir, T sun mode, arrows move sun (manual), B/N brightness, M/, contrast<br/>
+    Status: loading…
+  </div>
+
+  <script type="module">
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+
+    // =========================
+    // SETTINGS
+    // =========================
+    const BLUE_MARBLE_LOCAL = "./bluemarble-2048.png";
+    const CITY_LIGHTS_URL   = "./earth_lights_2048.png";
+
+    const REALEARTH_MAPSERV    = "https://realearth.ssec.wisc.edu/cgi-bin/mapserv";
+    const REALEARTH_ACCESS_KEY = "cf32a5095a8af165443447441e16b226";
+
+    // HARD PIN: no TSP / no fallback
+    const VIS_MAPFILE = "globalvis.map";
+    const VIS_LAYER   = "latest";
+    const IR_MAPFILE  = "globalir.map";
+    const IR_LAYER    = "latest";
+
+    const CLOUD_W = 1024;
+    const CLOUD_H = 512;
+    const CLOUD_REFRESH_MINUTES = 60;
+
+    // Visual tuning
+    let visOpacity = 0.80;          // O/P
+    let irOpacity  = 0.55;          // K/L
+    let terminatorSoftness = 0.10;  // 0.05–0.15
+    let irAlphaFloor = 0.04;        // prevents holes where IR is dark/no-data
+
+    // Contrast tweak (visible luminance shaping)
+    const VIS_CONTRAST_GAMMA = 1.35; // 1.2–1.6 typical
+
+    // Hologram tuning
+    let globeScale = 0.88;          // [ / ]
+    let spinSpeed  = 0.15;          // - / =
+
+    // =========================
+    // CONSTANT LONGITUDE SHIFT (move seam to mid-Atlantic)
+    // =========================
+    // Target seam longitude (degrees). -30 means ~30°W, middle Atlantic.
+    const SEAM_LON_DEG = -30;
+
+    // Convert seam target to UV shift.
+    // Original equirectangular: u = (lon + 180) / 360.
+    // We want lon=SEAM_LON_DEG to land at u=0 seam => u' = u - u0.
+    // Use positive wrap: LON_SHIFT_U in [0..1).
+    const LON_SHIFT_U = (1 - ((SEAM_LON_DEG + 180) / 360)) % 1;
+
+    // =========================
+    // FINAL OUTPUT BRIGHTENING
+    // =========================
+    let FINAL_GAIN = 1.70;      // B/N keys adjust. Try 1.4–2.2
+    let FINAL_CONTRAST = 1.08;  // M/, keys adjust. Try 1.0–1.2
+
+    // =========================
+    // Bright preset (scene + auto brightness)
+    // =========================
+    const SUN_INTENSITY_DAY      = 2.2;
+    const AMBIENT_INTENSITY_DAY  = 0.60;
+
+    const SUN_INTENSITY_NIGHT      = 1.0;
+    const AMBIENT_INTENSITY_NIGHT  = 0.95;
+
+    const CLOUD_GAIN_DAY   = 1.20;
+    const CLOUD_GAIN_NIGHT = 1.70;
+
+    const CITY_GAIN_DAY    = 0.00;
+    const CITY_GAIN_NIGHT  = 2.00;
+
+    // =========================
+    // HUD helper
+    // =========================
+    const hud = document.getElementById("hud");
+    hud.style.display = "none"; // hidden by default (H toggles)
+
+    function setStatus(msg) {
+      const lines = hud.innerHTML.split("<br/>");
+      hud.innerHTML = `${lines[0]}<br/>Status: ${msg}`;
+    }
+
+    // =========================
+    // RealEarth URL builder
+    // =========================
+    function realEarthGetMapUrl({ mapfile, layer }) {
+      const params = new URLSearchParams({
+        map: mapfile,
+        service: "wms",
+        version: "1.3.0",
+        request: "GetMap",
+        layers: layer,
+        crs: "EPSG:4326",
+        bbox: "-90,-179.999,90,179.999",
+        width: String(CLOUD_W),
+        height: String(CLOUD_H),
+        format: "image/png",
+        transparent: "true",
+        accesskey: REALEARTH_ACCESS_KEY
+      });
+      params.set("t", String(Date.now()));
+      return `${REALEARTH_MAPSERV}?${params.toString()}`;
+    }
+
+    async function loadImage(url) {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.decoding = "async";
+      return new Promise((resolve, reject) => {
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = url;
+      });
+    }
+
+    // =========================
+    // Canvas helpers
+    // =========================
+    function makeCanvasFromImage(img, w, h) {
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      const cx = c.getContext("2d", { alpha: true });
+      cx.clearRect(0, 0, w, h);
+      cx.drawImage(img, 0, 0, w, h);
+      return c;
+    }
+
+    // Seam-safe wrap by copying edge pixels (no blending).
+    function bleedWrapEdges(canvas, bleedPx = 16) {
+      const w = canvas.width, h = canvas.height;
+      const ctx = canvas.getContext("2d", { alpha: true });
+
+      const px = Math.max(1, Math.min(bleedPx | 0, Math.floor(w / 4)));
+
+      const img = ctx.getImageData(0, 0, w, h);
+      const d = img.data;
+
+      function copyCol(srcX, dstX) {
+        for (let y = 0; y < h; y++) {
+          const si = (y * w + srcX) * 4;
+          const di = (y * w + dstX) * 4;
+          d[di]   = d[si];
+          d[di+1] = d[si+1];
+          d[di+2] = d[si+2];
+          d[di+3] = d[si+3];
+        }
+      }
+
+      for (let i = 0; i < px; i++) copyCol(i, w - px + i);
+      for (let i = 0; i < px; i++) copyCol(w - px + i, i);
+
+      ctx.putImageData(img, 0, 0);
+      return canvas;
+    }
+
+    function canvasToCloudTexture(c) {
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 8;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.generateMipmaps = false;
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      // keep half-texel offset in shader (uUOffset), not here
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    function canvasToBaseTexture(c) {
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 8;
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.generateMipmaps = false;
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      // Apply seam shift + half texel offset for THREE's built-in UV sampling
+      tex.offset.x = LON_SHIFT_U + (0.5 / c.width);
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    // =========================
+    // THREE.JS SETUP
+    // =========================
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setClearColor(0x000000, 1);
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const cam = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+    cam.position.set(0, 0, 4.3);
+
+    const sunLight = new THREE.DirectionalLight(0xffffff, SUN_INTENSITY_DAY);
+    sunLight.position.set(3, 1.2, 2.5);
+    scene.add(sunLight);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, AMBIENT_INTENSITY_DAY);
+    scene.add(ambientLight);
+
+    // =========================
+    // SUN CONTROL MODES
+    // =========================
+    const SunMode = Object.freeze({ REAL: "REAL", MANUAL: "MANUAL" });
+    let sunMode = SunMode.REAL;
+
+    let sunLon = 0;  // -180..180
+    let sunLat = 0;  //  -89..89
+
+    function setSunFromLonLat(lonDeg, latDeg) {
+      sunLon = ((lonDeg + 540) % 360) - 180;
+      sunLat = Math.max(-89, Math.min(89, latDeg));
+
+      const lon = THREE.MathUtils.degToRad(sunLon);
+      const lat = THREE.MathUtils.degToRad(sunLat);
+
+      const x = Math.cos(lat) * Math.cos(lon);
+      const y = Math.sin(lat);
+      const z = Math.cos(lat) * Math.sin(lon);
+
+      sunLight.position.set(x, y, z).normalize().multiplyScalar(5);
+    }
+
+    function updateSunFromDate(date = new Date()) {
+      const rad = Math.PI / 180;
+      const dayMs = 86400000;
+      const d = (date.getTime() - Date.UTC(2000,0,1,12,0,0)) / dayMs;
+
+      const g = (357.529 + 0.98560028 * d) * rad;
+      const q = (280.459 + 0.98564736 * d) * rad;
+
+      const L = q + (1.915 * Math.sin(g) + 0.020 * Math.sin(2*g)) * rad;
+      const e = 23.439 * rad;
+
+      const x = Math.cos(L);
+      const y = Math.sin(L) * Math.cos(e);
+      const z = Math.sin(L) * Math.sin(e);
+
+      sunLight.position.set(x, y, z).normalize().multiplyScalar(5);
+    }
+
+    function syncManualFromCurrentSun() {
+      const v = sunLight.position.clone().normalize();
+      const lat = Math.asin(v.y);
+      const lon = Math.atan2(v.z, v.x);
+      setSunFromLonLat(THREE.MathUtils.radToDeg(lon), THREE.MathUtils.radToDeg(lat));
+    }
+
+    updateSunFromDate(new Date());
+    setInterval(() => { if (sunMode === SunMode.REAL) updateSunFromDate(new Date()); }, 60 * 1000);
+
+    // =========================
+    // Base globe (seam-safe + shifted to Atlantic seam)
+    // =========================
+    const globeGeo = new THREE.SphereGeometry(1, 96, 96);
+
+    const baseImg = await loadImage(BLUE_MARBLE_LOCAL);
+    const baseW = (baseImg.naturalWidth || baseImg.width);
+    const baseH = (baseImg.naturalHeight || baseImg.height);
+    const baseCanvas = bleedWrapEdges(makeCanvasFromImage(baseImg, baseW, baseH), 16);
+    const baseTex = canvasToBaseTexture(baseCanvas);
+
+    const globe = new THREE.Mesh(
+      globeGeo,
+      new THREE.MeshPhongMaterial({ map: baseTex, shininess: 8, specular: 0x111111 })
+    );
+    scene.add(globe);
+
+    // =========================
+    // City lights sphere (seam-safe + shifted to Atlantic seam)
+    // =========================
+    const cityImg = await loadImage(CITY_LIGHTS_URL);
+    const cityW = (cityImg.naturalWidth || cityImg.width);
+    const cityH = (cityImg.naturalHeight || cityImg.height);
+    const cityCanvas = bleedWrapEdges(makeCanvasFromImage(cityImg, cityW, cityH), 16);
+    const cityTex = canvasToBaseTexture(cityCanvas); // includes LON_SHIFT_U
+
+    const cityUniforms = {
+      uNightMap: { value: cityTex },
+      uSunDir:   { value: new THREE.Vector3(1,0,0) },
+      uSoftness: { value: terminatorSoftness },
+      uGain:     { value: 0.0 },
+      uUOffset:  { value: 0.5 / cityCanvas.width },
+      uLonShift: { value: LON_SHIFT_U }
+    };
+
+    const cityMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: cityUniforms,
+      vertexShader: `
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        void main() {
+          vUv = uv;
+          vWorldNormal = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D uNightMap;
+        uniform vec3 uSunDir;
+        uniform float uSoftness;
+        uniform float uGain;
+        uniform float uUOffset;
+        uniform float uLonShift;
+
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+
+        float lum(vec3 c){ return dot(c, vec3(0.2126,0.7152,0.0722)); }
+
+        void main() {
+          // Wrap U with half-texel + constant lon shift
+          vec2 uv = vec2(fract(vUv.x + uUOffset + uLonShift), vUv.y);
+
+          vec3 n = normalize(vWorldNormal);
+          vec3 s = normalize(uSunDir);
+          float d = dot(n, s);
+
+          float dayW   = smoothstep(-uSoftness, uSoftness, d);
+          float nightW = 1.0 - dayW;
+
+          vec3 nightRGB = texture2D(uNightMap, uv).rgb;
+
+          float a = clamp(lum(nightRGB) * 2.0, 0.0, 1.0);
+          float outA = nightW * a * uGain;
+          if (outA < 0.002) discard;
+
+          gl_FragColor = vec4(nightRGB * uGain, outA);
+        }
+      `
+    });
+
+    const citySphere = new THREE.Mesh(new THREE.SphereGeometry(1.0015, 96, 96), cityMat);
+    scene.add(citySphere);
+
+    // =========================
+    // Cloud shader (shift seam to Atlantic)
+    // =========================
+    const cloudGeo = new THREE.SphereGeometry(1.006, 96, 96);
+    const cloudUniforms = {
+      uVisMap: { value: new THREE.Texture() },
+      uIrMap:  { value: new THREE.Texture() },
+      uHasTex: { value: 0.0 },
+      uSunDir: { value: new THREE.Vector3(1,0,0) },
+      uVisOpacity: { value: visOpacity },
+      uIrOpacity:  { value: irOpacity },
+      uSoftness:   { value: terminatorSoftness },
+      uIrFloor:    { value: irAlphaFloor },
+      uUOffset:    { value: 0.5 / CLOUD_W },
+      uLonShift:   { value: LON_SHIFT_U },
+      uVisGamma:   { value: VIS_CONTRAST_GAMMA },
+      uCloudGain:  { value: 1.0 }
+    };
+
+    const cloudMat = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      uniforms: cloudUniforms,
+      vertexShader: `
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        void main() {
+          vUv = uv;
+          vWorldNormal = normalize((modelMatrix * vec4(normal, 0.0)).xyz);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D uVisMap;
+        uniform sampler2D uIrMap;
+        uniform float uHasTex;
+        uniform vec3  uSunDir;
+        uniform float uVisOpacity;
+        uniform float uIrOpacity;
+        uniform float uSoftness;
+        uniform float uIrFloor;
+        uniform float uUOffset;
+        uniform float uLonShift;
+        uniform float uVisGamma;
+        uniform float uCloudGain;
+
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+
+        float lum(vec3 c){ return dot(c, vec3(0.2126,0.7152,0.0722)); }
+
+        void main() {
+          if (uHasTex < 0.5) discard;
+
+          // Wrap U with half-texel + constant lon shift (moves seam to Atlantic)
+          vec2 uv = vec2(fract(vUv.x + uUOffset + uLonShift), vUv.y);
+
+          vec3 n = normalize(vWorldNormal);
+          vec3 s = normalize(uSunDir);
+
+          float d = dot(n, s);
+          float dayW   = smoothstep(-uSoftness, uSoftness, d);
+          float nightW = 1.0 - dayW;
+
+          vec4 vis = texture2D(uVisMap, uv);
+          vec4 ir  = texture2D(uIrMap,  uv);
+
+          float visStrength = pow(lum(vis.rgb), uVisGamma);
+          float irStrength  = mix(ir.a, lum(ir.rgb), 0.85);
+
+          float aVis = clamp(visStrength * uVisOpacity * uCloudGain, 0.0, 1.0);
+          float aIr  = clamp(irStrength  * uIrOpacity  * uCloudGain, 0.0, 1.0);
+          aIr = max(aIr, uIrFloor);
+
+          float outA = clamp(aVis * dayW + aIr * nightW, 0.0, 1.0);
+
+          vec3 visColor = vec3(1.0);
+          vec3 irColor  = vec3(0.90, 0.93, 1.0);
+          vec3 outC = (visColor * (aVis * dayW) + irColor * (aIr * nightW)) / max(outA, 1e-4);
+
+          if (outA < 0.003) discard;
+          gl_FragColor = vec4(outC, outA);
+        }
+      `
+    });
+
+    const cloudSphere = new THREE.Mesh(cloudGeo, cloudMat);
+    scene.add(cloudSphere);
+
+    // =========================
+    // Hologram output canvas (4 views) - layout unchanged
+    // =========================
+    const rtSize = 1024;
+    const out = document.createElement("canvas");
+    const ctx = out.getContext("2d", { alpha: false });
+    document.body.appendChild(out);
+
+    renderer.domElement.style.position = "fixed";
+    renderer.domElement.style.left = "-10000px";
+    renderer.domElement.style.top = "0";
+
+    function resize() { out.width = window.innerWidth; out.height = window.innerHeight; }
+    window.addEventListener("resize", resize);
+    resize();
+
+    function drawHologramLayout(imgCanvas) {
+      const w = out.width, h = out.height;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, w, h);
+
+      const side = Math.floor(Math.min(w, h) * 0.48 * globeScale);
+      const cx = w / 2, cy = h / 2;
+
+      const pos = {
+        top:    { x: cx, y: cy - side * 0.78, rot: Math.PI },
+        bottom: { x: cx, y: cy + side * 0.78, rot: 0 },
+        left:   { x: cx - side * 0.78, y: cy, rot: Math.PI / 2 },
+        right:  { x: cx + side * 0.78, y: cy, rot: -Math.PI / 2 }
+      };
+
+      function blit(p) {
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(p.rot);
+
+        ctx.filter = `brightness(${FINAL_GAIN}) contrast(${FINAL_CONTRAST})`;
+        ctx.drawImage(imgCanvas, -side/2, -side/2, side, side);
+        ctx.filter = "none";
+
+        ctx.restore();
+      }
+
+      blit(pos.top); blit(pos.left); blit(pos.right); blit(pos.bottom);
+    }
+
+    // =========================
+    // Fetch clouds (seam-safe + shifted)
+    // =========================
+    async function refreshClouds() {
+      const urlVis = realEarthGetMapUrl({ mapfile: VIS_MAPFILE, layer: VIS_LAYER });
+      const urlIr  = realEarthGetMapUrl({ mapfile: IR_MAPFILE,  layer: IR_LAYER  });
+
+      try {
+        setStatus(`Fetching clouds… (sun=${sunMode})`);
+        const [imgVis, imgIr] = await Promise.all([loadImage(urlVis), loadImage(urlIr)]);
+
+        const visCanvas = bleedWrapEdges(makeCanvasFromImage(imgVis, CLOUD_W, CLOUD_H), 16);
+        const irCanvas  = bleedWrapEdges(makeCanvasFromImage(imgIr,  CLOUD_W, CLOUD_H), 16);
+
+        const visTex = canvasToCloudTexture(visCanvas);
+        const irTex  = canvasToCloudTexture(irCanvas);
+
+        if (cloudUniforms.uHasTex.value > 0.5) {
+          cloudUniforms.uVisMap.value.dispose?.();
+          cloudUniforms.uIrMap.value.dispose?.();
+        }
+
+        cloudUniforms.uVisMap.value = visTex;
+        cloudUniforms.uIrMap.value  = irTex;
+        cloudUniforms.uHasTex.value = 1.0;
+
+        cloudUniforms.uVisOpacity.value = visOpacity;
+        cloudUniforms.uIrOpacity.value  = irOpacity;
+        cloudUniforms.uSoftness.value   = terminatorSoftness;
+        cloudUniforms.uIrFloor.value    = irAlphaFloor;
+
+        setStatus(`OK – Clouds updated. Seam moved to lon ${SEAM_LON_DEG}°`);
+      } catch (e) {
+        console.warn("Cloud fetch failed:", e);
+        setStatus("Cloud fetch FAILED – check Console (F12).");
+      }
+    }
+
+    await refreshClouds();
+    setInterval(refreshClouds, CLOUD_REFRESH_MINUTES * 60 * 1000);
+
+    // =========================
+    // Auto brightness
+    // =========================
+    function lerp(a, b, t) { return a + (b - a) * t; }
+
+    function updateAutoBrightness() {
+      const camDir = cam.position.clone().normalize();
+      const sunDir = sunLight.position.clone().normalize();
+      const facing = THREE.MathUtils.clamp((sunDir.dot(camDir) + 1) * 0.5, 0, 1);
+
+      sunLight.intensity = lerp(SUN_INTENSITY_NIGHT, SUN_INTENSITY_DAY, facing);
+      ambientLight.intensity = lerp(AMBIENT_INTENSITY_NIGHT, AMBIENT_INTENSITY_DAY, facing);
+
+      cloudUniforms.uCloudGain.value = lerp(CLOUD_GAIN_NIGHT, CLOUD_GAIN_DAY, facing);
+      cityUniforms.uGain.value = lerp(CITY_GAIN_NIGHT, CITY_GAIN_DAY, facing);
+    }
+
+    // =========================
+    // Animation
+    // =========================
+    let last = performance.now();
+    function tick(now) {
+      const dt = (now - last) / 1000;
+      last = now;
+
+      globe.rotation.y += spinSpeed * dt;
+      cloudSphere.rotation.y += spinSpeed * dt;
+      citySphere.rotation.y += spinSpeed * dt;
+
+      cloudUniforms.uSunDir.value.copy(sunLight.position).normalize();
+      cityUniforms.uSunDir.value.copy(sunLight.position).normalize();
+
+      updateAutoBrightness();
+
+      renderer.setSize(rtSize, rtSize, false);
+      cam.aspect = 1;
+      cam.updateProjectionMatrix();
+      renderer.render(scene, cam);
+
+      drawHologramLayout(renderer.domElement);
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+
+    // =========================
+    // Keys
+    // =========================
+    window.addEventListener("keydown", (e) => {
+      if (e.key === "h" || e.key === "H") hud.style.display = (hud.style.display === "none" ? "" : "none");
+      if (e.key === "[") globeScale = Math.max(0.55, globeScale - 0.03);
+      if (e.key === "]") globeScale = Math.min(1.15, globeScale + 0.03);
+      if (e.key === "-") spinSpeed = Math.max(0.02, spinSpeed - 0.03);
+      if (e.key === "=") spinSpeed = Math.min(1.2,  spinSpeed + 0.03);
+      if (e.key === "c" || e.key === "C") refreshClouds();
+
+      if (e.key === "o" || e.key === "O") { visOpacity = Math.min(1.0, visOpacity + 0.05); cloudUniforms.uVisOpacity.value = visOpacity; setStatus(`Visible opacity ${Math.round(visOpacity*100)}%`); }
+      if (e.key === "p" || e.key === "P") { visOpacity = Math.max(0.0, visOpacity - 0.05); cloudUniforms.uVisOpacity.value = visOpacity; setStatus(`Visible opacity ${Math.round(visOpacity*100)}%`); }
+
+      if (e.key === "k" || e.key === "K") { irOpacity  = Math.min(1.0, irOpacity  + 0.05); cloudUniforms.uIrOpacity.value  = irOpacity;  setStatus(`IR opacity ${Math.round(irOpacity*100)}%`); }
+      if (e.key === "l" || e.key === "L") { irOpacity  = Math.max(0.0, irOpacity  - 0.05); cloudUniforms.uIrOpacity.value  = irOpacity;  setStatus(`IR opacity ${Math.round(irOpacity*100)}%`); }
+
+      if (e.key === "b" || e.key === "B") { FINAL_GAIN = Math.min(3.0, FINAL_GAIN + 0.10); setStatus(`FINAL brightness gain: ${FINAL_GAIN.toFixed(2)}`); }
+      if (e.key === "n" || e.key === "N") { FINAL_GAIN = Math.max(0.5, FINAL_GAIN - 0.10); setStatus(`FINAL brightness gain: ${FINAL_GAIN.toFixed(2)}`); }
+
+      if (e.key === "m" || e.key === "M") { FINAL_CONTRAST = Math.min(2.0, FINAL_CONTRAST + 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
+      if (e.key === "," )                 { FINAL_CONTRAST = Math.max(0.8, FINAL_CONTRAST - 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
+
+      if (e.key === "t" || e.key === "T") {
+        if (sunMode === SunMode.REAL) {
+          sunMode = SunMode.MANUAL;
+          syncManualFromCurrentSun();
+          setStatus(`Sun mode: MANUAL (arrows adjust). Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`);
+        } else {
+          sunMode = SunMode.REAL;
+          updateSunFromDate(new Date());
+          setStatus(`Sun mode: REAL (UTC now)`);
+        }
+      }
+
+      if (sunMode === SunMode.MANUAL) {
+        const step = e.shiftKey ? 15 : 5;
+        if (e.key === "ArrowLeft")  { setSunFromLonLat(sunLon - step, sunLat); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
+        if (e.key === "ArrowRight") { setSunFromLonLat(sunLon + step, sunLat); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
+        if (e.key === "ArrowUp")    { setSunFromLonLat(sunLon, sunLat + step); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
+        if (e.key === "ArrowDown")  { setSunFromLonLat(sunLon, sunLat - step); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
+      }
+
+      if (sunMode === SunMode.REAL && (e.key === "r" || e.key === "R")) {
+        updateSunFromDate(new Date());
+      }
+    });
+  </script>
+</body>
+</html>
