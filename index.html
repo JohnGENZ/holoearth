@@ -748,7 +748,7 @@
       const dt = (now - last) / 1000;
       last = now;
 
-      const rotDir = (viewerMode === ViewerMode.BOTTOM) ? 1 : 1;
+      const rotDir = (viewerMode === ViewerMode.BOTTOM) ? -1 : -1;
 
       globe.rotation.y += rotDir * spinSpeed * dt;
       cloudSphere.rotation.y += rotDir * spinSpeed * dt;
