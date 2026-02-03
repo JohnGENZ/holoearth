@@ -167,6 +167,10 @@
         <button class="wide" data-cmd="presetReset">Reset</button>
       </div>
 
+      <div class="row">
+        <button id="viewerBtn" data-cmd="viewerToggle" style="grid-column: span 4;">Viewer: Bottom</button>
+      </div>
+
       <div class="status" id="uiStatus">Ready</div>
     </div>
   </div>
@@ -205,6 +209,32 @@
     // Hologram tuning
     let globeScale = 0.88;          // [ / ]
     let spinSpeed  = 0.15;          // - / =
+
+    // =========================
+    // VIEWER POSITION OPTION (Top / Bottom)
+    // Bottom viewer: screen ABOVE viewer (looking UP)  -> globe is upright but rotation must be reversed
+    // Top viewer:    screen BELOW viewer (looking DOWN)-> globe must be inverted; rotation normal
+    // Toggle with key V, or via Settings panel.
+    // =========================
+    const ViewerMode = Object.freeze({ TOP: "TOP", BOTTOM: "BOTTOM" });
+    let viewerMode = ViewerMode.BOTTOM; // default matches prior behaviour (upright when screen is above viewer)
+
+    function applyViewerMode() {
+      const flipX = (viewerMode === ViewerMode.TOP) ? Math.PI : 0;
+      // Flip the whole earth stack (base + clouds + city lights) to keep north-up for the chosen viewer position
+      if (typeof globe !== "undefined") globe.rotation.x = flipX;
+      if (typeof cloudSphere !== "undefined") cloudSphere.rotation.x = flipX;
+      if (typeof citySphere !== "undefined") citySphere.rotation.x = flipX;
+
+      const btn = document.getElementById("viewerBtn");
+      if (btn) btn.textContent = `Viewer: ${viewerMode === ViewerMode.TOP ? "Top" : "Bottom"}`;
+      setStatus(`Viewer mode: ${viewerMode === ViewerMode.TOP ? "Top (screen below)" : "Bottom (screen above)"}`);
+    }
+
+    function toggleViewerMode() {
+      viewerMode = (viewerMode === ViewerMode.BOTTOM) ? ViewerMode.TOP : ViewerMode.BOTTOM;
+      applyViewerMode();
+    }
 
     // =========================
     // CONSTANT LONGITUDE SHIFT (move seam to mid-Atlantic)
@@ -603,6 +633,9 @@
     const cloudSphere = new THREE.Mesh(cloudGeo, cloudMat);
     scene.add(cloudSphere);
 
+    // Apply initial viewer mode (top/bottom)
+    applyViewerMode();
+
     // =========================
     // Hologram output canvas (4 views) - layout unchanged
     // =========================
@@ -715,9 +748,11 @@
       const dt = (now - last) / 1000;
       last = now;
 
-      globe.rotation.y += spinSpeed * dt;
-      cloudSphere.rotation.y += spinSpeed * dt;
-      citySphere.rotation.y += spinSpeed * dt;
+      const rotDir = (viewerMode === ViewerMode.BOTTOM) ? -1 : 1;
+
+      globe.rotation.y += rotDir * spinSpeed * dt;
+      cloudSphere.rotation.y += rotDir * spinSpeed * dt;
+      citySphere.rotation.y += rotDir * spinSpeed * dt;
 
       cloudUniforms.uSunDir.value.copy(sunLight.position).normalize();
       cityUniforms.uSunDir.value.copy(sunLight.position).normalize();
@@ -744,6 +779,7 @@
       if (e.key === "-") spinSpeed = Math.max(0.02, spinSpeed - 0.03);
       if (e.key === "=") spinSpeed = Math.min(1.2,  spinSpeed + 0.03);
       if (e.key === "c" || e.key === "C") refreshClouds();
+      if (e.key === "v" || e.key === "V") toggleViewerMode();
 
       if (e.key === "o" || e.key === "O") { visOpacity = Math.min(1.0, visOpacity + 0.05); cloudUniforms.uVisOpacity.value = visOpacity; setStatus(`Visible opacity ${Math.round(visOpacity*100)}%`); }
       if (e.key === "p" || e.key === "P") { visOpacity = Math.max(0.0, visOpacity - 0.05); cloudUniforms.uVisOpacity.value = visOpacity; setStatus(`Visible opacity ${Math.round(visOpacity*100)}%`); }
@@ -886,6 +922,11 @@
         switch (cmd) {
           case "close":
             hidePanel();
+            return;
+
+          case "viewerToggle":
+            toggleViewerMode();
+            uiSetStatus(`Viewer: ${viewerMode === ViewerMode.TOP ? "Top" : "Bottom"}`);
             return;
 
           case "hud":
