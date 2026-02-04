@@ -158,6 +158,14 @@
         <button data-cmd="close">Close</button>
       </div>
 
+      <!-- NEW: Clock controls -->
+      <div class="row">
+        <button data-cmd="clk+">Clk+</button>
+        <button data-cmd="clk-">Clk−</button>
+        <button data-cmd="clksz+">ClkSz+</button>
+        <button data-cmd="clksz-">ClkSz−</button>
+      </div>
+
       <div class="row">
         <button class="wide" data-cmd="presetBright">Bright</button>
         <button class="wide" data-cmd="presetDemo">Demo</button>
@@ -253,6 +261,24 @@
     // =========================
     let FINAL_GAIN = 1.70;      // B/N keys adjust. Try 1.4–2.2
     let FINAL_CONTRAST = 1.08;  // M/, keys adjust. Try 1.0–1.2
+
+    // =========================
+    // NEW: CLOCK BANNER (screen-space, does not rotate)
+    // =========================
+    let CLOCK_GAIN = 1.30;      // G/F keys or panel Clk+/Clk-
+    let CLOCK_SCALE = 1.00;     // Y/U keys or panel ClkSz+/ClkSz-
+    const CLOCK_USE_24H = true; // keep simple and consistent
+
+    function pad2(n){ return (n < 10 ? "0" : "") + n; }
+    function formatClock(d = new Date()) {
+      const hh = d.getHours();
+      const mm = d.getMinutes();
+      const ss = d.getSeconds();
+      if (CLOCK_USE_24H) return `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
+      const h12 = ((hh + 11) % 12) + 1;
+      const ap = (hh >= 12) ? "PM" : "AM";
+      return `${pad2(h12)}:${pad2(mm)}:${pad2(ss)} ${ap}`;
+    }
 
     // =========================
     // Bright preset (scene + auto brightness)
@@ -652,6 +678,44 @@
     window.addEventListener("resize", resize);
     resize();
 
+    // NEW: draw a clock banner in screen space (above the layout)
+    function drawClockBanner(cx, topY, side) {
+      // Scale relative to globe size, and allow user control
+      const fontPx = Math.max(14, Math.floor(side * 0.11 * CLOCK_SCALE));
+      const padY = Math.max(10, Math.floor(fontPx * 0.45));
+      const y = Math.max(10 + fontPx, topY - padY);
+
+      const t = formatClock(new Date());
+
+      // Map CLOCK_GAIN into alpha + subtle glow. (Keeps it simple, readable, and "brightness-like")
+      const a = Math.max(0.0, Math.min(1.0, CLOCK_GAIN / 2.0)); // 0..~1 for typical values
+      const glow = Math.max(0, Math.min(30, Math.floor(18 * CLOCK_GAIN)));
+
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "bottom";
+      ctx.font = `700 ${fontPx}px system-ui, Segoe UI, Arial, sans-serif`;
+
+      // Glow/shadow to help the reflection in the pyramid
+      ctx.shadowColor = "rgba(255,255,255,0.45)";
+      ctx.shadowBlur = glow;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+
+      // Slight backdrop stroke for readability
+      ctx.globalAlpha = Math.max(0.10, a);
+      ctx.lineWidth = Math.max(2, Math.floor(fontPx * 0.09));
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.strokeText(t, cx, y);
+
+      // Main text
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "rgba(255,255,255,1)";
+      ctx.fillText(t, cx, y);
+
+      ctx.restore();
+    }
+
     function drawHologramLayout(imgCanvas) {
       const w = out.width, h = out.height;
       ctx.fillStyle = "#000";
@@ -680,6 +744,10 @@
       }
 
       blit(pos.top); blit(pos.left); blit(pos.right); blit(pos.bottom);
+
+      // NEW: clock banner above the layout (screen space, not rotating)
+      const topOfTopGlobe = pos.top.y - side/2;
+      drawClockBanner(cx, topOfTopGlobe, side);
     }
 
     // =========================
@@ -793,6 +861,12 @@
       if (e.key === "m" || e.key === "M") { FINAL_CONTRAST = Math.min(2.0, FINAL_CONTRAST + 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
       if (e.key === "," )                 { FINAL_CONTRAST = Math.max(0.8, FINAL_CONTRAST - 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
 
+      // NEW: Clock brightness + size
+      if (e.key === "g" || e.key === "G") { CLOCK_GAIN = Math.min(3.0, CLOCK_GAIN + 0.10); setStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`); }
+      if (e.key === "f" || e.key === "F") { CLOCK_GAIN = Math.max(0.0, CLOCK_GAIN - 0.10); setStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`); }
+      if (e.key === "y" || e.key === "Y") { CLOCK_SCALE = Math.min(2.0, CLOCK_SCALE + 0.05); setStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`); }
+      if (e.key === "u" || e.key === "U") { CLOCK_SCALE = Math.max(0.5, CLOCK_SCALE - 0.05); setStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`); }
+
       if (e.key === "t" || e.key === "T") {
         if (sunMode === SunMode.REAL) {
           sunMode = SunMode.MANUAL;
@@ -876,7 +950,9 @@
         visOpacity,
         irOpacity,
         globeScale,
-        spinSpeed
+        spinSpeed,
+        CLOCK_GAIN,
+        CLOCK_SCALE
       };
 
       function applyPreset(which) {
@@ -909,6 +985,8 @@
           irOpacity  = PRESET_DEFAULTS.irOpacity;
           globeScale = PRESET_DEFAULTS.globeScale;
           spinSpeed  = PRESET_DEFAULTS.spinSpeed;
+          CLOCK_GAIN = PRESET_DEFAULTS.CLOCK_GAIN;
+          CLOCK_SCALE = PRESET_DEFAULTS.CLOCK_SCALE;
           cloudUniforms.uVisOpacity.value = visOpacity;
           cloudUniforms.uIrOpacity.value  = irOpacity;
           uiSetStatus("Preset Reset");
@@ -1002,6 +1080,24 @@
             irOpacity = Math.max(0.0, irOpacity - 0.05);
             cloudUniforms.uIrOpacity.value = irOpacity;
             uiSetStatus(`IR opacity: ${Math.round(irOpacity * 100)}%`);
+            return;
+
+          // NEW: Clock controls
+          case "clk+":
+            CLOCK_GAIN = Math.min(3.0, CLOCK_GAIN + 0.10);
+            uiSetStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`);
+            return;
+          case "clk-":
+            CLOCK_GAIN = Math.max(0.0, CLOCK_GAIN - 0.10);
+            uiSetStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`);
+            return;
+          case "clksz+":
+            CLOCK_SCALE = Math.min(2.0, CLOCK_SCALE + 0.05);
+            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`);
+            return;
+          case "clksz-":
+            CLOCK_SCALE = Math.max(0.5, CLOCK_SCALE - 0.05);
+            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`);
             return;
 
           case "sunToggle":
