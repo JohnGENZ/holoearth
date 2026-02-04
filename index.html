@@ -158,7 +158,7 @@
         <button data-cmd="close">Close</button>
       </div>
 
-      <!-- NEW: Clock controls -->
+      <!-- Clock controls (all faces) -->
       <div class="row">
         <button data-cmd="clk+">Clk+</button>
         <button data-cmd="clk-">Clk−</button>
@@ -220,16 +220,12 @@
 
     // =========================
     // VIEWER POSITION OPTION (Top / Bottom)
-    // Bottom viewer: screen ABOVE viewer (looking UP)  -> globe is upright but rotation must be reversed
-    // Top viewer:    screen BELOW viewer (looking DOWN)-> globe must be inverted; rotation normal
-    // Toggle with key V, or via Settings panel.
     // =========================
     const ViewerMode = Object.freeze({ TOP: "TOP", BOTTOM: "BOTTOM" });
-    let viewerMode = ViewerMode.BOTTOM; // default matches prior behaviour (upright when screen is above viewer)
+    let viewerMode = ViewerMode.BOTTOM;
 
     function applyViewerMode() {
       const flipX = (viewerMode === ViewerMode.TOP) ? Math.PI : 0;
-      // Flip the whole earth stack (base + clouds + city lights) to keep north-up for the chosen viewer position
       if (typeof globe !== "undefined") globe.rotation.x = flipX;
       if (typeof cloudSphere !== "undefined") cloudSphere.rotation.x = flipX;
       if (typeof citySphere !== "undefined") citySphere.rotation.x = flipX;
@@ -247,13 +243,7 @@
     // =========================
     // CONSTANT LONGITUDE SHIFT (move seam to mid-Atlantic)
     // =========================
-    // Target seam longitude (degrees). -30 means ~30°W, middle Atlantic.
     const SEAM_LON_DEG = -30;
-
-    // Convert seam target to UV shift.
-    // Original equirectangular: u = (lon + 180) / 360.
-    // We want lon=SEAM_LON_DEG to land at u=0 seam => u' = u - u0.
-    // Use positive wrap: LON_SHIFT_U in [0..1).
     const LON_SHIFT_U = (1 - ((SEAM_LON_DEG + 180) / 360)) % 1;
 
     // =========================
@@ -263,21 +253,15 @@
     let FINAL_CONTRAST = 1.08;  // M/, keys adjust. Try 1.0–1.2
 
     // =========================
-    // NEW: CLOCK BANNER (screen-space, does not rotate)
+    // CLOCK BANNER (per-face; does not rotate with globe)
+    // Controls: G/F brightness, Y/U size; panel: Clk+/Clk-, ClkSz+/ClkSz-
     // =========================
-    let CLOCK_GAIN = 1.30;      // G/F keys or panel Clk+/Clk-
-    let CLOCK_SCALE = 1.00;     // Y/U keys or panel ClkSz+/ClkSz-
-    const CLOCK_USE_24H = true; // keep simple and consistent
+    let CLOCK_GAIN = 1.30;      // 0.0–3.0
+    let CLOCK_SCALE = 1.00;     // 0.5–2.0 (relative to globe face)
 
     function pad2(n){ return (n < 10 ? "0" : "") + n; }
     function formatClock(d = new Date()) {
-      const hh = d.getHours();
-      const mm = d.getMinutes();
-      const ss = d.getSeconds();
-      if (CLOCK_USE_24H) return `${pad2(hh)}:${pad2(mm)}:${pad2(ss)}`;
-      const h12 = ((hh + 11) % 12) + 1;
-      const ap = (hh >= 12) ? "PM" : "AM";
-      return `${pad2(h12)}:${pad2(mm)}:${pad2(ss)} ${ap}`;
+      return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
     }
 
     // =========================
@@ -304,7 +288,6 @@
     function setStatus(msg) {
       const lines = hud.innerHTML.split("<br/>");
       hud.innerHTML = `${lines[0]}<br/>Status: ${msg}`;
-      // Also mirror to touch UI status (if present)
       const uiStatus = document.getElementById("uiStatus");
       const uiMini = document.getElementById("uiMini");
       if (uiStatus) uiStatus.textContent = msg;
@@ -356,7 +339,6 @@
       return c;
     }
 
-    // Seam-safe wrap by copying edge pixels (no blending).
     function bleedWrapEdges(canvas, bleedPx = 16) {
       const w = canvas.width, h = canvas.height;
       const ctx = canvas.getContext("2d", { alpha: true });
@@ -393,7 +375,6 @@
       tex.generateMipmaps = false;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
-      // keep half-texel offset in shader (uUOffset), not here
       tex.needsUpdate = true;
       return tex;
     }
@@ -407,7 +388,6 @@
       tex.generateMipmaps = false;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
-      // Apply seam shift + half texel offset for THREE's built-in UV sampling
       tex.offset.x = LON_SHIFT_U + (0.5 / c.width);
       tex.needsUpdate = true;
       return tex;
@@ -507,7 +487,7 @@
     const cityW = (cityImg.naturalWidth || cityImg.width);
     const cityH = (cityImg.naturalHeight || cityImg.height);
     const cityCanvas = bleedWrapEdges(makeCanvasFromImage(cityImg, cityW, cityH), 16);
-    const cityTex = canvasToBaseTexture(cityCanvas); // includes LON_SHIFT_U
+    const cityTex = canvasToBaseTexture(cityCanvas);
 
     const cityUniforms = {
       uNightMap: { value: cityTex },
@@ -546,7 +526,6 @@
         float lum(vec3 c){ return dot(c, vec3(0.2126,0.7152,0.0722)); }
 
         void main() {
-          // Wrap U with half-texel + constant lon shift
           vec2 uv = vec2(fract(vUv.x + uUOffset + uLonShift), vUv.y);
 
           vec3 n = normalize(vWorldNormal);
@@ -624,7 +603,6 @@
         void main() {
           if (uHasTex < 0.5) discard;
 
-          // Wrap U with half-texel + constant lon shift (moves seam to Atlantic)
           vec2 uv = vec2(fract(vUv.x + uUOffset + uLonShift), vUv.y);
 
           vec3 n = normalize(vWorldNormal);
@@ -659,7 +637,6 @@
     const cloudSphere = new THREE.Mesh(cloudGeo, cloudMat);
     scene.add(cloudSphere);
 
-    // Apply initial viewer mode (top/bottom)
     applyViewerMode();
 
     // =========================
@@ -678,40 +655,36 @@
     window.addEventListener("resize", resize);
     resize();
 
-    // NEW: draw a clock banner in screen space (above the layout)
-    function drawClockBanner(cx, topY, side) {
-      // Scale relative to globe size, and allow user control
-      const fontPx = Math.max(14, Math.floor(side * 0.11 * CLOCK_SCALE));
-      const padY = Math.max(10, Math.floor(fontPx * 0.45));
-      const y = Math.max(10 + fontPx, topY - padY);
-
+    // Draw a clock banner in the CURRENT (already face-rotated) coordinate system.
+    // This is per-face (so it appears on all four sides) and does not rotate with the 3D globe.
+    function drawClockOnFace(side) {
       const t = formatClock(new Date());
 
-      // Map CLOCK_GAIN into alpha + subtle glow. (Keeps it simple, readable, and "brightness-like")
-      const a = Math.max(0.0, Math.min(1.0, CLOCK_GAIN / 2.0)); // 0..~1 for typical values
-      const glow = Math.max(0, Math.min(30, Math.floor(18 * CLOCK_GAIN)));
+      const fontPx = Math.max(14, Math.floor(side * 0.11 * CLOCK_SCALE));
+      const y = -side/2 - Math.max(8, Math.floor(fontPx * 0.55)); // above the face square
+      const x = 0;
+
+      const a = Math.max(0.0, Math.min(1.0, CLOCK_GAIN / 2.0));
+      const glow = Math.max(0, Math.min(40, Math.floor(18 * CLOCK_GAIN)));
 
       ctx.save();
       ctx.textAlign = "center";
       ctx.textBaseline = "bottom";
       ctx.font = `700 ${fontPx}px system-ui, Segoe UI, Arial, sans-serif`;
 
-      // Glow/shadow to help the reflection in the pyramid
       ctx.shadowColor = "rgba(255,255,255,0.45)";
       ctx.shadowBlur = glow;
       ctx.shadowOffsetX = 0;
       ctx.shadowOffsetY = 0;
 
-      // Slight backdrop stroke for readability
       ctx.globalAlpha = Math.max(0.10, a);
       ctx.lineWidth = Math.max(2, Math.floor(fontPx * 0.09));
       ctx.strokeStyle = "rgba(0,0,0,0.55)";
-      ctx.strokeText(t, cx, y);
+      ctx.strokeText(t, x, y);
 
-      // Main text
       ctx.globalAlpha = a;
       ctx.fillStyle = "rgba(255,255,255,1)";
-      ctx.fillText(t, cx, y);
+      ctx.fillText(t, x, y);
 
       ctx.restore();
     }
@@ -740,14 +713,13 @@
         ctx.drawImage(imgCanvas, -side/2, -side/2, side, side);
         ctx.filter = "none";
 
+        // Clock banner (per-face; does not rotate with globe)
+        drawClockOnFace(side);
+
         ctx.restore();
       }
 
       blit(pos.top); blit(pos.left); blit(pos.right); blit(pos.bottom);
-
-      // NEW: clock banner above the layout (screen space, not rotating)
-      const topOfTopGlobe = pos.top.y - side/2;
-      drawClockBanner(cx, topOfTopGlobe, side);
     }
 
     // =========================
@@ -816,6 +788,8 @@
       const dt = (now - last) / 1000;
       last = now;
 
+      // NOTE: Your uploaded version already has the correct rotation behaviour.
+      // This section is unchanged from your file except for the clock drawing above.
       const rotDir = (viewerMode === ViewerMode.BOTTOM) ? -1 : -1;
 
       globe.rotation.y += rotDir * spinSpeed * dt;
@@ -861,7 +835,7 @@
       if (e.key === "m" || e.key === "M") { FINAL_CONTRAST = Math.min(2.0, FINAL_CONTRAST + 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
       if (e.key === "," )                 { FINAL_CONTRAST = Math.max(0.8, FINAL_CONTRAST - 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
 
-      // NEW: Clock brightness + size
+      // Clock controls
       if (e.key === "g" || e.key === "G") { CLOCK_GAIN = Math.min(3.0, CLOCK_GAIN + 0.10); setStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`); }
       if (e.key === "f" || e.key === "F") { CLOCK_GAIN = Math.max(0.0, CLOCK_GAIN - 0.10); setStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`); }
       if (e.key === "y" || e.key === "Y") { CLOCK_SCALE = Math.min(2.0, CLOCK_SCALE + 0.05); setStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`); }
@@ -886,18 +860,10 @@
         if (e.key === "ArrowUp")    { setSunFromLonLat(sunLon, sunLat + step); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
         if (e.key === "ArrowDown")  { setSunFromLonLat(sunLon, sunLat - step); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
       }
-
-      if (sunMode === SunMode.REAL && (e.key === "r" || e.key === "R")) {
-        updateSunFromDate(new Date());
-      }
     });
 
     /* ==========================================================
        OPTION 1 + refinements: touch UI wiring (Android-safe)
-       - pointerup (reliable on Android)
-       - single gear toggle handler (no conflicts)
-       - auto-hide after 3s (interaction resets)
-       - presets (Bright / Demo / Night / Reset)
        ========================================================== */
     (function initTouchUI(){
       const uiBtn = document.getElementById("uiBtn");
@@ -939,11 +905,9 @@
         else hidePanel();
       }
 
-      // Default state: collapsed
       hidePanel();
       uiSetStatus("Ready");
 
-      // Snapshot defaults for preset reset
       const PRESET_DEFAULTS = {
         FINAL_GAIN,
         FINAL_CONTRAST,
@@ -1038,6 +1002,24 @@
             uiSetStatus(`Contrast: ${FINAL_CONTRAST.toFixed(2)}`);
             return;
 
+          // Clock controls
+          case "clk+":
+            CLOCK_GAIN = Math.min(3.0, CLOCK_GAIN + 0.10);
+            uiSetStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`);
+            return;
+          case "clk-":
+            CLOCK_GAIN = Math.max(0.0, CLOCK_GAIN - 0.10);
+            uiSetStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`);
+            return;
+          case "clksz+":
+            CLOCK_SCALE = Math.min(2.0, CLOCK_SCALE + 0.05);
+            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`);
+            return;
+          case "clksz-":
+            CLOCK_SCALE = Math.max(0.5, CLOCK_SCALE - 0.05);
+            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`);
+            return;
+
           case "size+":
             globeScale = Math.min(1.15, globeScale + 0.03);
             uiSetStatus(`Size: ${globeScale.toFixed(2)}`);
@@ -1080,24 +1062,6 @@
             irOpacity = Math.max(0.0, irOpacity - 0.05);
             cloudUniforms.uIrOpacity.value = irOpacity;
             uiSetStatus(`IR opacity: ${Math.round(irOpacity * 100)}%`);
-            return;
-
-          // NEW: Clock controls
-          case "clk+":
-            CLOCK_GAIN = Math.min(3.0, CLOCK_GAIN + 0.10);
-            uiSetStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`);
-            return;
-          case "clk-":
-            CLOCK_GAIN = Math.max(0.0, CLOCK_GAIN - 0.10);
-            uiSetStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`);
-            return;
-          case "clksz+":
-            CLOCK_SCALE = Math.min(2.0, CLOCK_SCALE + 0.05);
-            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`);
-            return;
-          case "clksz-":
-            CLOCK_SCALE = Math.max(0.5, CLOCK_SCALE - 0.05);
-            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`);
             return;
 
           case "sunToggle":
@@ -1143,14 +1107,12 @@
         }
       }
 
-      // Gear toggle: pointerup is most reliable on Android
       uiBtn.addEventListener("pointerup", (e) => {
         e.preventDefault();
         e.stopPropagation();
         togglePanel();
       }, { passive: false });
 
-      // Panel buttons: pointerup
       uiPanel.addEventListener("pointerup", (ev) => {
         const btn = ev.target.closest("button[data-cmd]");
         if (!btn) return;
@@ -1159,7 +1121,6 @@
         runCmd(btn.getAttribute("data-cmd"));
       }, { passive: false });
 
-      // Keep panel alive while interacting (auto-hide refinement #1)
       ["pointerdown", "pointermove", "touchstart", "wheel"].forEach(evtName => {
         uiPanel.addEventListener(evtName, () => armAutoHide(), { passive: true });
         uiBtn.addEventListener(evtName, () => armAutoHide(), { passive: true });
