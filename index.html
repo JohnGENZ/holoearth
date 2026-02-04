@@ -158,14 +158,6 @@
         <button data-cmd="close">Close</button>
       </div>
 
-      <!-- Clock controls (all faces) -->
-      <div class="row">
-        <button data-cmd="clk+">Clk+</button>
-        <button data-cmd="clk-">Clk−</button>
-        <button data-cmd="clksz+">ClkSz+</button>
-        <button data-cmd="clksz-">ClkSz−</button>
-      </div>
-
       <div class="row">
         <button class="wide" data-cmd="presetBright">Bright</button>
         <button class="wide" data-cmd="presetDemo">Demo</button>
@@ -176,7 +168,10 @@
       </div>
 
       <div class="row">
-        <button id="viewerBtn" data-cmd="viewerToggle" style="grid-column: span 4;">Viewer: Bottom</button>
+        <button data-cmd="clockBright+">Clk+</button>
+        <button data-cmd="clockBright-">Clk−</button>
+        <button data-cmd="clockSize+">ClkSize+</button>
+        <button data-cmd="clockSize-">ClkSize−</button>
       </div>
 
       <div class="status" id="uiStatus">Ready</div>
@@ -219,31 +214,15 @@
     let spinSpeed  = 0.15;          // - / =
 
     // =========================
-    // VIEWER POSITION OPTION (Top / Bottom)
-    // =========================
-    const ViewerMode = Object.freeze({ TOP: "TOP", BOTTOM: "BOTTOM" });
-    let viewerMode = ViewerMode.BOTTOM;
-
-    function applyViewerMode() {
-      const flipX = (viewerMode === ViewerMode.TOP) ? Math.PI : 0;
-      if (typeof globe !== "undefined") globe.rotation.x = flipX;
-      if (typeof cloudSphere !== "undefined") cloudSphere.rotation.x = flipX;
-      if (typeof citySphere !== "undefined") citySphere.rotation.x = flipX;
-
-      const btn = document.getElementById("viewerBtn");
-      if (btn) btn.textContent = `Viewer: ${viewerMode === ViewerMode.TOP ? "Top" : "Bottom"}`;
-      setStatus(`Viewer mode: ${viewerMode === ViewerMode.TOP ? "Top (screen below)" : "Bottom (screen above)"}`);
-    }
-
-    function toggleViewerMode() {
-      viewerMode = (viewerMode === ViewerMode.BOTTOM) ? ViewerMode.TOP : ViewerMode.BOTTOM;
-      applyViewerMode();
-    }
-
-    // =========================
     // CONSTANT LONGITUDE SHIFT (move seam to mid-Atlantic)
     // =========================
+    // Target seam longitude (degrees). -30 means ~30°W, middle Atlantic.
     const SEAM_LON_DEG = -30;
+
+    // Convert seam target to UV shift.
+    // Original equirectangular: u = (lon + 180) / 360.
+    // We want lon=SEAM_LON_DEG to land at u=0 seam => u' = u - u0.
+    // Use positive wrap: LON_SHIFT_U in [0..1).
     const LON_SHIFT_U = (1 - ((SEAM_LON_DEG + 180) / 360)) % 1;
 
     // =========================
@@ -251,18 +230,22 @@
     // =========================
     let FINAL_GAIN = 1.70;      // B/N keys adjust. Try 1.4–2.2
     let FINAL_CONTRAST = 1.08;  // M/, keys adjust. Try 1.0–1.2
-
-    // =========================
-    // CLOCK BANNER (per-face; does not rotate with globe)
-    // Controls: G/F brightness, Y/U size; panel: Clk+/Clk-, ClkSz+/ClkSz-
-    // =========================
-    let CLOCK_GAIN = 1.30;      // 0.0–3.0
-    let CLOCK_SCALE = 1.00;     // 0.5–2.0 (relative to globe face)
-
-    function pad2(n){ return (n < 10 ? "0" : "") + n; }
-    function formatClock(d = new Date()) {
-      return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
-    }
+ 
+     // =========================
+     // DIGITAL CLOCK (hologram overlay)
+     // =========================
+     // Position is in face-space, relative to the face size:
+     //   X: -1 (left edge) .. 0 (center) .. +1 (right edge)
+     //   Y: -1 (top edge)  .. 0 (center) .. +1 (bottom edge)
+     // Start in the middle of the globe (0,0). Tweak these to experiment.
+     let CLOCK_POS_X = 0.0;
+     let CLOCK_POS_Y = 0.0;
+ 
+     // Brightness (opacity) and size controls for the clock:
+     // - CLOCK_BRIGHTNESS: 0..1
+     // - CLOCK_SCALE: ~0.5..3
+     let CLOCK_BRIGHTNESS = 0.55; // keys: 1/2, touch: Clock+ / Clock-
+     let CLOCK_SCALE      = 1.00; // keys: 3/4, touch: Size+ / Size-
 
     // =========================
     // Bright preset (scene + auto brightness)
@@ -288,6 +271,7 @@
     function setStatus(msg) {
       const lines = hud.innerHTML.split("<br/>");
       hud.innerHTML = `${lines[0]}<br/>Status: ${msg}`;
+      // Also mirror to touch UI status (if present)
       const uiStatus = document.getElementById("uiStatus");
       const uiMini = document.getElementById("uiMini");
       if (uiStatus) uiStatus.textContent = msg;
@@ -339,6 +323,7 @@
       return c;
     }
 
+    // Seam-safe wrap by copying edge pixels (no blending).
     function bleedWrapEdges(canvas, bleedPx = 16) {
       const w = canvas.width, h = canvas.height;
       const ctx = canvas.getContext("2d", { alpha: true });
@@ -375,6 +360,7 @@
       tex.generateMipmaps = false;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
+      // keep half-texel offset in shader (uUOffset), not here
       tex.needsUpdate = true;
       return tex;
     }
@@ -388,6 +374,7 @@
       tex.generateMipmaps = false;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
+      // Apply seam shift + half texel offset for THREE's built-in UV sampling
       tex.offset.x = LON_SHIFT_U + (0.5 / c.width);
       tex.needsUpdate = true;
       return tex;
@@ -487,7 +474,7 @@
     const cityW = (cityImg.naturalWidth || cityImg.width);
     const cityH = (cityImg.naturalHeight || cityImg.height);
     const cityCanvas = bleedWrapEdges(makeCanvasFromImage(cityImg, cityW, cityH), 16);
-    const cityTex = canvasToBaseTexture(cityCanvas);
+    const cityTex = canvasToBaseTexture(cityCanvas); // includes LON_SHIFT_U
 
     const cityUniforms = {
       uNightMap: { value: cityTex },
@@ -526,6 +513,7 @@
         float lum(vec3 c){ return dot(c, vec3(0.2126,0.7152,0.0722)); }
 
         void main() {
+          // Wrap U with half-texel + constant lon shift
           vec2 uv = vec2(fract(vUv.x + uUOffset + uLonShift), vUv.y);
 
           vec3 n = normalize(vWorldNormal);
@@ -539,33 +527,32 @@
 
           float a = clamp(lum(nightRGB) * 2.0, 0.0, 1.0);
           float outA = nightW * a * uGain;
-          if (outA < 0.002) discard;
+          if (outA <= 0.001) discard;
 
           gl_FragColor = vec4(nightRGB * uGain, outA);
         }
       `
     });
 
-    const citySphere = new THREE.Mesh(new THREE.SphereGeometry(1.0015, 96, 96), cityMat);
+    const citySphere = new THREE.Mesh(new THREE.SphereGeometry(1.001, 96, 96), cityMat);
     scene.add(citySphere);
 
     // =========================
-    // Cloud shader (shift seam to Atlantic)
+    // Cloud sphere shader (visible day + IR night blend)
     // =========================
-    const cloudGeo = new THREE.SphereGeometry(1.006, 96, 96);
     const cloudUniforms = {
-      uVisMap: { value: new THREE.Texture() },
-      uIrMap:  { value: new THREE.Texture() },
-      uHasTex: { value: 0.0 },
-      uSunDir: { value: new THREE.Vector3(1,0,0) },
-      uVisOpacity: { value: visOpacity },
-      uIrOpacity:  { value: irOpacity },
-      uSoftness:   { value: terminatorSoftness },
-      uIrFloor:    { value: irAlphaFloor },
-      uUOffset:    { value: 0.5 / CLOUD_W },
-      uLonShift:   { value: LON_SHIFT_U },
-      uVisGamma:   { value: VIS_CONTRAST_GAMMA },
-      uCloudGain:  { value: 1.0 }
+      uVisMap:      { value: null },
+      uIrMap:       { value: null },
+      uSunDir:      { value: new THREE.Vector3(1,0,0) },
+      uSoftness:    { value: terminatorSoftness },
+      uVisOpacity:  { value: visOpacity },
+      uIrOpacity:   { value: irOpacity },
+      uIrFloor:     { value: irAlphaFloor },
+      uUOffset:     { value: 0.5 / CLOUD_W },
+      uLonShift:    { value: LON_SHIFT_U },
+      uVisGamma:    { value: VIS_CONTRAST_GAMMA },
+      uCloudGainDay:{ value: CLOUD_GAIN_DAY },
+      uCloudGainNight:{ value: CLOUD_GAIN_NIGHT }
     };
 
     const cloudMat = new THREE.ShaderMaterial({
@@ -584,16 +571,16 @@
       fragmentShader: `
         uniform sampler2D uVisMap;
         uniform sampler2D uIrMap;
-        uniform float uHasTex;
         uniform vec3  uSunDir;
+        uniform float uSoftness;
         uniform float uVisOpacity;
         uniform float uIrOpacity;
-        uniform float uSoftness;
         uniform float uIrFloor;
         uniform float uUOffset;
         uniform float uLonShift;
         uniform float uVisGamma;
-        uniform float uCloudGain;
+        uniform float uCloudGainDay;
+        uniform float uCloudGainNight;
 
         varying vec2 vUv;
         varying vec3 vWorldNormal;
@@ -601,48 +588,97 @@
         float lum(vec3 c){ return dot(c, vec3(0.2126,0.7152,0.0722)); }
 
         void main() {
-          if (uHasTex < 0.5) discard;
-
           vec2 uv = vec2(fract(vUv.x + uUOffset + uLonShift), vUv.y);
 
           vec3 n = normalize(vWorldNormal);
           vec3 s = normalize(uSunDir);
-
           float d = dot(n, s);
-          float dayW   = smoothstep(-uSoftness, uSoftness, d);
+          float dayW = smoothstep(-uSoftness, uSoftness, d);
           float nightW = 1.0 - dayW;
 
           vec4 vis = texture2D(uVisMap, uv);
           vec4 ir  = texture2D(uIrMap,  uv);
 
-          float visStrength = pow(lum(vis.rgb), uVisGamma);
-          float irStrength  = mix(ir.a, lum(ir.rgb), 0.85);
+          // Visible "contrast tweak": gamma on luminance and rebuild
+          vec3 visRGB = vis.rgb;
+          float vL = lum(visRGB);
+          vL = pow(max(vL, 0.0001), uVisGamma);
+          visRGB *= (vL / max(lum(visRGB), 0.0001));
 
-          float aVis = clamp(visStrength * uVisOpacity * uCloudGain, 0.0, 1.0);
-          float aIr  = clamp(irStrength  * uIrOpacity  * uCloudGain, 0.0, 1.0);
-          aIr = max(aIr, uIrFloor);
+          // Gains for day/night cloud visibility
+          float cloudGain = mix(uCloudGainNight, uCloudGainDay, dayW);
 
-          float outA = clamp(aVis * dayW + aIr * nightW, 0.0, 1.0);
+          // Use alpha derived from luminance (better than raw alpha)
+          float visA = clamp(lum(visRGB) * 2.2, 0.0, 1.0) * uVisOpacity;
+          float irA  = clamp(lum(ir.rgb)    * 2.2, 0.0, 1.0) * uIrOpacity;
 
-          vec3 visColor = vec3(1.0);
-          vec3 irColor  = vec3(0.90, 0.93, 1.0);
-          vec3 outC = (visColor * (aVis * dayW) + irColor * (aIr * nightW)) / max(outA, 1e-4);
+          // Floor IR alpha so the "dark/no-data" doesn't punch holes
+          irA = max(irA, uIrFloor * uIrOpacity);
 
-          if (outA < 0.003) discard;
-          gl_FragColor = vec4(outC, outA);
+          // Blend maps by day/night weight, but keep some of both
+          vec3 rgb = mix(ir.rgb, visRGB, dayW);
+          float a  = mix(irA, visA, dayW);
+
+          // Apply gain (overall cloud strength)
+          rgb *= cloudGain;
+          a   = clamp(a * cloudGain, 0.0, 1.0);
+
+          if (a <= 0.001) discard;
+          gl_FragColor = vec4(rgb, a);
         }
       `
     });
 
-    const cloudSphere = new THREE.Mesh(cloudGeo, cloudMat);
+    const cloudSphere = new THREE.Mesh(new THREE.SphereGeometry(1.006, 96, 96), cloudMat);
     scene.add(cloudSphere);
 
-    applyViewerMode();
+    // =========================
+    // Fetch clouds (seam-safe + shifted)
+    // =========================
+    async function refreshClouds() {
+      const urlVis = realEarthGetMapUrl({ mapfile: VIS_MAPFILE, layer: VIS_LAYER });
+      const urlIr  = realEarthGetMapUrl({ mapfile: IR_MAPFILE,  layer: IR_LAYER  });
+
+      setStatus(`Fetching clouds…`);
+
+      try {
+        const [visImg, irImg] = await Promise.all([loadImage(urlVis), loadImage(urlIr)]);
+
+        const visCanvas = bleedWrapEdges(makeCanvasFromImage(visImg, CLOUD_W, CLOUD_H), 16);
+        const irCanvas  = bleedWrapEdges(makeCanvasFromImage(irImg,  CLOUD_W, CLOUD_H), 16);
+
+        cloudUniforms.uVisMap.value = canvasToCloudTexture(visCanvas);
+        cloudUniforms.uIrMap.value  = canvasToCloudTexture(irCanvas);
+
+        setStatus("OK – Clouds updated.");
+      } catch (err) {
+        console.error("Cloud fetch failed:", err);
+        setStatus("Cloud fetch failed (see console).");
+      }
+    }
+
+    await refreshClouds();
+    setInterval(refreshClouds, CLOUD_REFRESH_MINUTES * 60 * 1000);
 
     // =========================
-    // Hologram output canvas (4 views) - layout unchanged
+    // Viewer position (top/bottom)
+    // =========================
+    const ViewerMode = Object.freeze({ TOP: "TOP", BOTTOM: "BOTTOM" });
+    let viewerMode = ViewerMode.BOTTOM;
+
+    function toggleViewerMode() {
+      viewerMode = (viewerMode === ViewerMode.BOTTOM) ? ViewerMode.TOP : ViewerMode.BOTTOM;
+      setStatus(`Viewer: ${viewerMode === ViewerMode.TOP ? "Top (screen below viewer)" : "Bottom (screen above viewer)"}`);
+    }
+
+    // =========================
+    // Offscreen render target (square view for hologram)
     // =========================
     const rtSize = 1024;
+    const rt = new THREE.WebGLRenderTarget(rtSize, rtSize, { depthBuffer: true, stencilBuffer: false });
+    rt.texture.colorSpace = THREE.SRGBColorSpace;
+
+    // Output canvas for hologram layout
     const out = document.createElement("canvas");
     const ctx = out.getContext("2d", { alpha: false });
     document.body.appendChild(out);
@@ -655,40 +691,77 @@
     window.addEventListener("resize", resize);
     resize();
 
-    // Draw a clock banner in the CURRENT (already face-rotated) coordinate system.
-    // This is per-face (so it appears on all four sides) and does not rotate with the 3D globe.
+    // =========================
+    // DIGITAL CLOCK rendering (drawn on each face; does not rotate with the face)
+    // =========================
+    function getLocalClockString() {
+      // Local time, seconds included for a "digital clock" feel
+      const d = new Date();
+      const hh = String(d.getHours()).padStart(2, "0");
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      const ss = String(d.getSeconds()).padStart(2, "0");
+      return `${hh}:${mm}:${ss}`;
+    }
+
     function drawClockOnFace(side) {
-      const t = formatClock(new Date());
+      // Draw in unrotated face-space coordinates (so it stays upright on-screen)
+      const t = getLocalClockString();
 
-      const fontPx = Math.max(14, Math.floor(side * 0.11 * CLOCK_SCALE));
-      const y = -side/2 - Math.max(8, Math.floor(fontPx * 0.55)); // above the face square
-      const x = 0;
+      const alpha = Math.max(0, Math.min(1, CLOCK_BRIGHTNESS));
+      if (alpha <= 0.001) return;
 
-      const a = Math.max(0.0, Math.min(1.0, CLOCK_GAIN / 2.0));
-      const glow = Math.max(0, Math.min(40, Math.floor(18 * CLOCK_GAIN)));
+      const s = Math.max(0.2, CLOCK_SCALE);
+      const fontPx = Math.max(14, Math.floor(side * 0.095 * s));
+
+      // Face-space position in pixels
+      const x = (CLOCK_POS_X * 0.5) * side;
+      const y = (CLOCK_POS_Y * 0.5) * side;
 
       ctx.save();
+      ctx.translate(x, y);
+
+      // If viewer is ABOVE the screen (TOP mode), the pyramid reflection flips;
+      // pre-flip the clock so it reads correctly in the hologram.
+      if (viewerMode === ViewerMode.TOP) ctx.scale(1, -1);
+
+      ctx.font = `700 ${fontPx}px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace`;
       ctx.textAlign = "center";
-      ctx.textBaseline = "bottom";
-      ctx.font = `700 ${fontPx}px system-ui, Segoe UI, Arial, sans-serif`;
+      ctx.textBaseline = "middle";
 
-      ctx.shadowColor = "rgba(255,255,255,0.45)";
-      ctx.shadowBlur = glow;
-      ctx.shadowOffsetX = 0;
-      ctx.shadowOffsetY = 0;
+      // Soft background bar for readability
+      const padX = Math.floor(fontPx * 0.6);
+      const padY = Math.floor(fontPx * 0.32);
+      const metrics = ctx.measureText(t);
+      const bw = Math.ceil(metrics.width + padX * 2);
+      const bh = Math.ceil(fontPx + padY * 2);
 
-      ctx.globalAlpha = Math.max(0.10, a);
-      ctx.lineWidth = Math.max(2, Math.floor(fontPx * 0.09));
-      ctx.strokeStyle = "rgba(0,0,0,0.55)";
-      ctx.strokeText(t, x, y);
+      ctx.fillStyle = `rgba(0,0,0,${0.35 * alpha})`;
+      roundRect(ctx, -bw/2, -bh/2, bw, bh, Math.max(10, Math.floor(fontPx * 0.3)));
+      ctx.fill();
 
-      ctx.globalAlpha = a;
-      ctx.fillStyle = "rgba(255,255,255,1)";
-      ctx.fillText(t, x, y);
+      // Glow + text
+      ctx.shadowColor = `rgba(255,255,255,${0.55 * alpha})`;
+      ctx.shadowBlur = Math.floor(fontPx * 0.35);
+      ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+      ctx.fillText(t, 0, 0);
 
       ctx.restore();
     }
 
+    function roundRect(c, x, y, w, h, r) {
+      const rr = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+      c.beginPath();
+      c.moveTo(x + rr, y);
+      c.arcTo(x + w, y, x + w, y + h, rr);
+      c.arcTo(x + w, y + h, x, y + h, rr);
+      c.arcTo(x, y + h, x, y, rr);
+      c.arcTo(x, y, x + w, y, rr);
+      c.closePath();
+    }
+
+    // =========================
+    // Draw hologram pyramid layout (4 faces)
+    // =========================
     function drawHologramLayout(imgCanvas) {
       const w = out.width, h = out.height;
       ctx.fillStyle = "#000";
@@ -713,8 +786,11 @@
         ctx.drawImage(imgCanvas, -side/2, -side/2, side, side);
         ctx.filter = "none";
 
-        // Clock banner (per-face; does not rotate with globe)
+        // Clock overlay (upright on-screen; shown on all faces)
+        ctx.save();
+        ctx.rotate(-p.rot);
         drawClockOnFace(side);
+        ctx.restore();
 
         ctx.restore();
       }
@@ -723,96 +799,82 @@
     }
 
     // =========================
-    // Fetch clouds (seam-safe + shifted)
+    // Render loop
     // =========================
-    async function refreshClouds() {
-      const urlVis = realEarthGetMapUrl({ mapfile: VIS_MAPFILE, layer: VIS_LAYER });
-      const urlIr  = realEarthGetMapUrl({ mapfile: IR_MAPFILE,  layer: IR_LAYER  });
+    const viewCanvas = document.createElement("canvas");
+    viewCanvas.width = rtSize;
+    viewCanvas.height = rtSize;
+    const viewCtx = viewCanvas.getContext("2d", { alpha: false });
 
-      try {
-        setStatus(`Fetching clouds… (sun=${sunMode})`);
-        const [imgVis, imgIr] = await Promise.all([loadImage(urlVis), loadImage(urlIr)]);
-
-        const visCanvas = bleedWrapEdges(makeCanvasFromImage(imgVis, CLOUD_W, CLOUD_H), 16);
-        const irCanvas  = bleedWrapEdges(makeCanvasFromImage(imgIr,  CLOUD_W, CLOUD_H), 16);
-
-        const visTex = canvasToCloudTexture(visCanvas);
-        const irTex  = canvasToCloudTexture(irCanvas);
-
-        if (cloudUniforms.uHasTex.value > 0.5) {
-          cloudUniforms.uVisMap.value.dispose?.();
-          cloudUniforms.uIrMap.value.dispose?.();
-        }
-
-        cloudUniforms.uVisMap.value = visTex;
-        cloudUniforms.uIrMap.value  = irTex;
-        cloudUniforms.uHasTex.value = 1.0;
-
-        cloudUniforms.uVisOpacity.value = visOpacity;
-        cloudUniforms.uIrOpacity.value  = irOpacity;
-        cloudUniforms.uSoftness.value   = terminatorSoftness;
-        cloudUniforms.uIrFloor.value    = irAlphaFloor;
-
-        setStatus(`OK – Clouds updated. Seam moved to lon ${SEAM_LON_DEG}°`);
-      } catch (e) {
-        console.warn("Cloud fetch failed:", e);
-        setStatus("Cloud fetch FAILED – check Console (F12).");
-      }
+    function computeDayFraction() {
+      const s = sunLight.position.clone().normalize();
+      // Approx "noon point" in view space; use globe normal towards sun.
+      // Day fraction roughly maps to how much of the visible hemisphere is lit.
+      // We'll just use sun direction Z as a proxy for day/night weighting.
+      return Math.max(0, Math.min(1, (s.z + 1) * 0.5));
     }
 
-    await refreshClouds();
-    setInterval(refreshClouds, CLOUD_REFRESH_MINUTES * 60 * 1000);
+    function updateAutoBrightness(dayFrac) {
+      const t = dayFrac; // 0=night, 1=day
 
-    // =========================
-    // Auto brightness
-    // =========================
-    function lerp(a, b, t) { return a + (b - a) * t; }
+      sunLight.intensity = SUN_INTENSITY_NIGHT + (SUN_INTENSITY_DAY - SUN_INTENSITY_NIGHT) * t;
+      ambientLight.intensity = AMBIENT_INTENSITY_NIGHT + (AMBIENT_INTENSITY_DAY - AMBIENT_INTENSITY_NIGHT) * t;
 
-    function updateAutoBrightness() {
-      const camDir = cam.position.clone().normalize();
-      const sunDir = sunLight.position.clone().normalize();
-      const facing = THREE.MathUtils.clamp((sunDir.dot(camDir) + 1) * 0.5, 0, 1);
+      // City lights only at night
+      cityUniforms.uGain.value = CITY_GAIN_NIGHT + (CITY_GAIN_DAY - CITY_GAIN_NIGHT) * t;
 
-      sunLight.intensity = lerp(SUN_INTENSITY_NIGHT, SUN_INTENSITY_DAY, facing);
-      ambientLight.intensity = lerp(AMBIENT_INTENSITY_NIGHT, AMBIENT_INTENSITY_DAY, facing);
-
-      cloudUniforms.uCloudGain.value = lerp(CLOUD_GAIN_NIGHT, CLOUD_GAIN_DAY, facing);
-      cityUniforms.uGain.value = lerp(CITY_GAIN_NIGHT, CITY_GAIN_DAY, facing);
+      // Clouds gain (stronger at night to show IR)
+      cloudUniforms.uCloudGainNight.value = CLOUD_GAIN_NIGHT;
+      cloudUniforms.uCloudGainDay.value = CLOUD_GAIN_DAY;
     }
 
-    // =========================
-    // Animation
-    // =========================
-    let last = performance.now();
-    function tick(now) {
-      const dt = (now - last) / 1000;
-      last = now;
+    let lastT = performance.now();
+    function animate(now) {
+      requestAnimationFrame(animate);
+      const dt = Math.min(0.05, (now - lastT) / 1000);
+      lastT = now;
 
-      // NOTE: Your uploaded version already has the correct rotation behaviour.
-      // This section is unchanged from your file except for the clock drawing above.
-      const rotDir = (viewerMode === ViewerMode.BOTTOM) ? -1 : -1;
+      // Sun vector into shaders
+      const s = sunLight.position.clone().normalize();
+      cloudUniforms.uSunDir.value.copy(s);
+      cityUniforms.uSunDir.value.copy(s);
+      cloudUniforms.uSoftness.value = terminatorSoftness;
+      cityUniforms.uSoftness.value = terminatorSoftness;
 
-      globe.rotation.y += rotDir * spinSpeed * dt;
-      cloudSphere.rotation.y += rotDir * spinSpeed * dt;
-      citySphere.rotation.y += rotDir * spinSpeed * dt;
+      // Auto brightness based on approximate day fraction
+      const dayFrac = computeDayFraction();
+      updateAutoBrightness(dayFrac);
 
-      cloudUniforms.uSunDir.value.copy(sunLight.position).normalize();
-      cityUniforms.uSunDir.value.copy(sunLight.position).normalize();
+      // Spin globe
+      const dir = (viewerMode === ViewerMode.TOP) ? -1 : +1;
+      globe.rotation.y += dir * spinSpeed * dt;
+      citySphere.rotation.copy(globe.rotation);
+      cloudSphere.rotation.copy(globe.rotation);
 
-      updateAutoBrightness();
-
+      // Render offscreen
+      renderer.setRenderTarget(rt);
       renderer.setSize(rtSize, rtSize, false);
       cam.aspect = 1;
       cam.updateProjectionMatrix();
       renderer.render(scene, cam);
+      renderer.setRenderTarget(null);
 
-      drawHologramLayout(renderer.domElement);
-      requestAnimationFrame(tick);
+      // Copy RT to a 2D canvas
+      renderer.readRenderTargetPixels(rt, 0, 0, rtSize, rtSize, new Uint8Array(rtSize * rtSize * 4));
+      // Faster path: draw from renderer canvas via toDataURL is slow; instead use drawImage(renderer.domElement)
+      // We rendered offscreen, so use renderer.domElement by temporarily rendering to screen is avoided;
+      // Alternative: use WebGLRenderer.domElement still updated. We'll just draw it:
+      viewCtx.fillStyle = "#000";
+      viewCtx.fillRect(0, 0, rtSize, rtSize);
+      viewCtx.drawImage(renderer.domElement, 0, 0, rtSize, rtSize);
+
+      // Hologram layout
+      drawHologramLayout(viewCanvas);
     }
-    requestAnimationFrame(tick);
+    requestAnimationFrame(animate);
 
     // =========================
-    // Keys
+    // Keyboard controls
     // =========================
     window.addEventListener("keydown", (e) => {
       if (e.key === "h" || e.key === "H") hud.style.display = (hud.style.display === "none" ? "" : "none");
@@ -835,11 +897,11 @@
       if (e.key === "m" || e.key === "M") { FINAL_CONTRAST = Math.min(2.0, FINAL_CONTRAST + 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
       if (e.key === "," )                 { FINAL_CONTRAST = Math.max(0.8, FINAL_CONTRAST - 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
 
-      // Clock controls
-      if (e.key === "g" || e.key === "G") { CLOCK_GAIN = Math.min(3.0, CLOCK_GAIN + 0.10); setStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`); }
-      if (e.key === "f" || e.key === "F") { CLOCK_GAIN = Math.max(0.0, CLOCK_GAIN - 0.10); setStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`); }
-      if (e.key === "y" || e.key === "Y") { CLOCK_SCALE = Math.min(2.0, CLOCK_SCALE + 0.05); setStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`); }
-      if (e.key === "u" || e.key === "U") { CLOCK_SCALE = Math.max(0.5, CLOCK_SCALE - 0.05); setStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`); }
+      // Clock controls (works on desktop + Android keyboard)
+      if (e.key === "1") { CLOCK_BRIGHTNESS = Math.min(1.0, CLOCK_BRIGHTNESS + 0.05); setStatus(`Clock brightness: ${Math.round(CLOCK_BRIGHTNESS*100)}%`); }
+      if (e.key === "2") { CLOCK_BRIGHTNESS = Math.max(0.0, CLOCK_BRIGHTNESS - 0.05); setStatus(`Clock brightness: ${Math.round(CLOCK_BRIGHTNESS*100)}%`); }
+      if (e.key === "3") { CLOCK_SCALE = Math.min(3.0, CLOCK_SCALE + 0.10); setStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}×`); }
+      if (e.key === "4") { CLOCK_SCALE = Math.max(0.4, CLOCK_SCALE - 0.10); setStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}×`); }
 
       if (e.key === "t" || e.key === "T") {
         if (sunMode === SunMode.REAL) {
@@ -854,109 +916,74 @@
       }
 
       if (sunMode === SunMode.MANUAL) {
-        const step = e.shiftKey ? 15 : 5;
-        if (e.key === "ArrowLeft")  { setSunFromLonLat(sunLon - step, sunLat); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
-        if (e.key === "ArrowRight") { setSunFromLonLat(sunLon + step, sunLat); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
-        if (e.key === "ArrowUp")    { setSunFromLonLat(sunLon, sunLat + step); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
-        if (e.key === "ArrowDown")  { setSunFromLonLat(sunLon, sunLat - step); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
+        if (e.key === "ArrowLeft")  { sunLon -= 5; setSunFromLonLat(sunLon, sunLat); setStatus(`Sun Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
+        if (e.key === "ArrowRight") { sunLon += 5; setSunFromLonLat(sunLon, sunLat); setStatus(`Sun Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
+        if (e.key === "ArrowUp")    { sunLat += 3; setSunFromLonLat(sunLon, sunLat); setStatus(`Sun Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
+        if (e.key === "ArrowDown")  { sunLat -= 3; setSunFromLonLat(sunLon, sunLat); setStatus(`Sun Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
       }
     });
 
-    /* ==========================================================
-       OPTION 1 + refinements: touch UI wiring (Android-safe)
-       ========================================================== */
-    (function initTouchUI(){
+    // =========================
+    // Touch UI (Option 1)
+    // =========================
+    (function initTouchUI() {
+      const uiWrap = document.getElementById("uiWrap");
       const uiBtn = document.getElementById("uiBtn");
       const uiPanel = document.getElementById("uiPanel");
-      const uiStatusEl = document.getElementById("uiStatus");
-      const uiMiniEl = document.getElementById("uiMini");
-
-      if (!uiBtn || !uiPanel) {
-        console.warn("Touch UI: uiBtn/uiPanel not found");
-        return;
-      }
+      const uiStatus = document.getElementById("uiStatus");
+      const uiMini = document.getElementById("uiMini");
 
       let hideTimer = null;
+      const AUTOHIDE_MS = 3000;
 
-      function uiSetStatus(s) {
-        if (uiStatusEl) uiStatusEl.textContent = s;
-        if (uiMiniEl) uiMiniEl.textContent = s;
-      }
-
-      function armAutoHide() {
-        if (hideTimer) clearTimeout(hideTimer);
-        hideTimer = setTimeout(() => {
-          uiPanel.style.display = "none";
-        }, 3000);
+      function uiSetStatus(msg) {
+        if (uiStatus) uiStatus.textContent = msg;
+        if (uiMini) uiMini.textContent = msg;
       }
 
       function showPanel() {
-        uiPanel.style.display = "block";
+        uiPanel.style.display = "";
         armAutoHide();
       }
-
       function hidePanel() {
         uiPanel.style.display = "none";
-        if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+        disarmAutoHide();
       }
-
       function togglePanel() {
-        if (uiPanel.style.display === "none" || uiPanel.style.display === "") showPanel();
+        if (uiPanel.style.display === "none" || uiPanel.style.display === "") {
+          // If currently none, show. If empty, it's visible.
+          if (uiPanel.style.display === "none") showPanel();
+          else hidePanel();
+        } else {
+          // Fallback
+          showPanel();
+        }
+      }
+
+      function armAutoHide() {
+        if (!uiPanel || uiPanel.style.display === "none") return;
+        if (hideTimer) clearTimeout(hideTimer);
+        hideTimer = setTimeout(() => hidePanel(), AUTOHIDE_MS);
+      }
+      function disarmAutoHide() {
+        if (hideTimer) clearTimeout(hideTimer);
+        hideTimer = null;
+      }
+
+      uiBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        if (uiPanel.style.display === "none") showPanel();
         else hidePanel();
-      }
+      }, { passive: false });
 
-      hidePanel();
-      uiSetStatus("Ready");
-
-      const PRESET_DEFAULTS = {
-        FINAL_GAIN,
-        FINAL_CONTRAST,
-        visOpacity,
-        irOpacity,
-        globeScale,
-        spinSpeed,
-        CLOCK_GAIN,
-        CLOCK_SCALE
-      };
-
-      function applyPreset(which) {
-        if (which === "Bright") {
-          FINAL_GAIN = 2.10;
-          FINAL_CONTRAST = 1.10;
-          uiSetStatus(`Preset Bright • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
-          return;
-        }
-        if (which === "Demo") {
-          FINAL_GAIN = 2.25;
-          FINAL_CONTRAST = 1.12;
-          visOpacity = Math.min(1.0, Math.max(visOpacity, 0.85));
-          irOpacity  = Math.min(1.0, Math.max(irOpacity,  0.60));
-          cloudUniforms.uVisOpacity.value = visOpacity;
-          cloudUniforms.uIrOpacity.value  = irOpacity;
-          uiSetStatus(`Preset Demo • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
-          return;
-        }
-        if (which === "Night") {
-          FINAL_GAIN = 2.35;
-          FINAL_CONTRAST = 1.18;
-          uiSetStatus(`Preset Night • gain ${FINAL_GAIN.toFixed(2)} • contrast ${FINAL_CONTRAST.toFixed(2)}`);
-          return;
-        }
-        if (which === "Reset") {
-          FINAL_GAIN = PRESET_DEFAULTS.FINAL_GAIN;
-          FINAL_CONTRAST = PRESET_DEFAULTS.FINAL_CONTRAST;
-          visOpacity = PRESET_DEFAULTS.visOpacity;
-          irOpacity  = PRESET_DEFAULTS.irOpacity;
-          globeScale = PRESET_DEFAULTS.globeScale;
-          spinSpeed  = PRESET_DEFAULTS.spinSpeed;
-          CLOCK_GAIN = PRESET_DEFAULTS.CLOCK_GAIN;
-          CLOCK_SCALE = PRESET_DEFAULTS.CLOCK_SCALE;
-          cloudUniforms.uVisOpacity.value = visOpacity;
-          cloudUniforms.uIrOpacity.value  = irOpacity;
-          uiSetStatus("Preset Reset");
-          return;
-        }
-      }
+      uiPanel.addEventListener("click", async (e) => {
+        const t = e.target;
+        if (!(t instanceof HTMLElement)) return;
+        const cmd = t.getAttribute("data-cmd");
+        if (!cmd) return;
+        e.preventDefault();
+        await runCmd(cmd);
+      }, { passive: false });
 
       async function runCmd(cmd) {
         armAutoHide();
@@ -1002,22 +1029,24 @@
             uiSetStatus(`Contrast: ${FINAL_CONTRAST.toFixed(2)}`);
             return;
 
-          // Clock controls
-          case "clk+":
-            CLOCK_GAIN = Math.min(3.0, CLOCK_GAIN + 0.10);
-            uiSetStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`);
+          case "clockBright+":
+            CLOCK_BRIGHTNESS = Math.min(1.0, CLOCK_BRIGHTNESS + 0.05);
+            uiSetStatus(`Clock brightness: ${Math.round(CLOCK_BRIGHTNESS*100)}%`);
             return;
-          case "clk-":
-            CLOCK_GAIN = Math.max(0.0, CLOCK_GAIN - 0.10);
-            uiSetStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`);
+
+          case "clockBright-":
+            CLOCK_BRIGHTNESS = Math.max(0.0, CLOCK_BRIGHTNESS - 0.05);
+            uiSetStatus(`Clock brightness: ${Math.round(CLOCK_BRIGHTNESS*100)}%`);
             return;
-          case "clksz+":
-            CLOCK_SCALE = Math.min(2.0, CLOCK_SCALE + 0.05);
-            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`);
+
+          case "clockSize+":
+            CLOCK_SCALE = Math.min(3.0, CLOCK_SCALE + 0.10);
+            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}×`);
             return;
-          case "clksz-":
-            CLOCK_SCALE = Math.max(0.5, CLOCK_SCALE - 0.05);
-            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`);
+
+          case "clockSize-":
+            CLOCK_SCALE = Math.max(0.4, CLOCK_SCALE - 0.10);
+            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}×`);
             return;
 
           case "size+":
@@ -1043,85 +1072,83 @@
           case "vis+":
             visOpacity = Math.min(1.0, visOpacity + 0.05);
             cloudUniforms.uVisOpacity.value = visOpacity;
-            uiSetStatus(`Visible opacity: ${Math.round(visOpacity * 100)}%`);
+            uiSetStatus(`Visible: ${Math.round(visOpacity*100)}%`);
             return;
 
           case "vis-":
             visOpacity = Math.max(0.0, visOpacity - 0.05);
             cloudUniforms.uVisOpacity.value = visOpacity;
-            uiSetStatus(`Visible opacity: ${Math.round(visOpacity * 100)}%`);
+            uiSetStatus(`Visible: ${Math.round(visOpacity*100)}%`);
             return;
 
           case "ir+":
             irOpacity = Math.min(1.0, irOpacity + 0.05);
             cloudUniforms.uIrOpacity.value = irOpacity;
-            uiSetStatus(`IR opacity: ${Math.round(irOpacity * 100)}%`);
+            uiSetStatus(`IR: ${Math.round(irOpacity*100)}%`);
             return;
 
           case "ir-":
             irOpacity = Math.max(0.0, irOpacity - 0.05);
             cloudUniforms.uIrOpacity.value = irOpacity;
-            uiSetStatus(`IR opacity: ${Math.round(irOpacity * 100)}%`);
+            uiSetStatus(`IR: ${Math.round(irOpacity*100)}%`);
             return;
 
           case "sunToggle":
             if (sunMode === SunMode.REAL) {
               sunMode = SunMode.MANUAL;
               syncManualFromCurrentSun();
-              uiSetStatus("Sun: MANUAL (use arrows)");
+              uiSetStatus(`Sun: MANUAL`);
             } else {
               sunMode = SunMode.REAL;
               updateSunFromDate(new Date());
-              uiSetStatus("Sun: REAL (UTC now)");
+              uiSetStatus(`Sun: REAL`);
             }
             return;
 
           case "sunLeft":
-            if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch)"); return; }
-            setSunFromLonLat(sunLon - 5, sunLat);
-            uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+            if (sunMode === SunMode.MANUAL) { sunLon -= 5; setSunFromLonLat(sunLon, sunLat); uiSetStatus(`Sun Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
             return;
 
           case "sunRight":
-            if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch)"); return; }
-            setSunFromLonLat(sunLon + 5, sunLat);
-            uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+            if (sunMode === SunMode.MANUAL) { sunLon += 5; setSunFromLonLat(sunLon, sunLat); uiSetStatus(`Sun Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
             return;
 
           case "sunUp":
-            if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch)"); return; }
-            setSunFromLonLat(sunLon, sunLat + 5);
-            uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+            if (sunMode === SunMode.MANUAL) { sunLat += 3; setSunFromLonLat(sunLon, sunLat); uiSetStatus(`Sun Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
             return;
 
           case "sunDown":
-            if (sunMode !== SunMode.MANUAL) { uiSetStatus("Sun is REAL (tap Sun to switch)"); return; }
-            setSunFromLonLat(sunLon, sunLat - 5);
-            uiSetStatus(`Sun MANUAL: Lon ${sunLon.toFixed(0)} Lat ${sunLat.toFixed(0)}`);
+            if (sunMode === SunMode.MANUAL) { sunLat -= 3; setSunFromLonLat(sunLon, sunLat); uiSetStatus(`Sun Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
             return;
 
-          case "presetBright": applyPreset("Bright"); return;
-          case "presetDemo":   applyPreset("Demo");   return;
-          case "presetNight":  applyPreset("Night");  return;
-          case "presetReset":  applyPreset("Reset");  return;
+          case "presetBright":
+            FINAL_GAIN = 1.90; FINAL_CONTRAST = 1.10; globeScale = 0.90; spinSpeed = 0.18;
+            uiSetStatus("Preset: Bright");
+            return;
+
+          case "presetDemo":
+            FINAL_GAIN = 1.75; FINAL_CONTRAST = 1.08; globeScale = 0.88; spinSpeed = 0.25;
+            uiSetStatus("Preset: Demo");
+            return;
+
+          case "presetNight":
+            FINAL_GAIN = 1.55; FINAL_CONTRAST = 1.05; globeScale = 0.88; spinSpeed = 0.15;
+            uiSetStatus("Preset: Night");
+            return;
+
+          case "presetReset":
+            FINAL_GAIN = 1.70; FINAL_CONTRAST = 1.08; globeScale = 0.88; spinSpeed = 0.15;
+            uiSetStatus("Preset: Reset");
+            return;
+
+          default:
+            uiSetStatus(`Unknown: ${cmd}`);
+            return;
         }
       }
 
-      uiBtn.addEventListener("pointerup", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        togglePanel();
-      }, { passive: false });
-
-      uiPanel.addEventListener("pointerup", (ev) => {
-        const btn = ev.target.closest("button[data-cmd]");
-        if (!btn) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        runCmd(btn.getAttribute("data-cmd"));
-      }, { passive: false });
-
-      ["pointerdown", "pointermove", "touchstart", "wheel"].forEach(evtName => {
+      // Auto-hide reset on any interaction
+      ["pointerdown","pointermove","touchstart","touchmove"].forEach(evtName => {
         uiPanel.addEventListener(evtName, () => armAutoHide(), { passive: true });
         uiBtn.addEventListener(evtName, () => armAutoHide(), { passive: true });
       });
