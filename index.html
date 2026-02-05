@@ -193,7 +193,8 @@
     const CITY_LIGHTS_URL   = "./earth_lights_2048.png";
 
     const REALEARTH_MAPSERV    = "https://realearth.ssec.wisc.edu/cgi-bin/mapserv";
-    const REALEARTH_ACCESS_KEY = "cf32a5095a8af165443447441e16b226";
+    // const REALEARTH_ACCESS_KEY = "cf32a5095a8af165443447441e16b226";
+    let REALEARTH_ACCESS_KEY = "";
 
     // HARD PIN: no TSP / no fallback
     const VIS_MAPFILE = "globalvis.map";
@@ -294,6 +295,24 @@
       if (uiMini) uiMini.textContent = msg;
     }
 
+    // =========================
+    // Load RealEarth access key from local file (GitHub Pages friendly)
+    // NOTE: This does NOT hide the key; it only allows updating without editing index.html.
+    // =========================
+    async function loadRealEarthKey() {
+      try {
+        const r = await fetch("./realearth_key.txt", { cache: "no-store" });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const key = (await r.text()).trim();
+        if (!key) throw new Error("Key file is empty");
+        REALEARTH_ACCESS_KEY = key;
+        setStatus("RealEarth key loaded.");
+      } catch (e) {
+        console.warn("Failed to load realearth_key.txt:", e);
+        setStatus("ERROR: RealEarth key not loaded (realearth_key.txt missing?)");
+      }
+    }
+    
     // =========================
     // RealEarth URL builder
     // =========================
@@ -798,6 +817,7 @@
       }
     }
 
+    await loadRealEarthKey();
     await refreshClouds();
     setInterval(refreshClouds, CLOUD_REFRESH_MINUTES * 60 * 1000);
 
