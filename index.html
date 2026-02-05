@@ -221,28 +221,8 @@
     // =========================
     // VIEWER POSITION OPTION (Top / Bottom)
     // =========================
-    // Bottom viewer: screen ABOVE viewer (looking UP) -> globe upright; rotation must be reversed
-    // Top viewer:    screen BELOW viewer (looking DOWN)-> globe must be inverted; rotation normal
-    // Toggle with key V, or via Settings panel.
-    // =========================
     const ViewerMode = Object.freeze({ TOP: "TOP", BOTTOM: "BOTTOM" });
-    let viewerMode = ViewerMode.BOTTOM; // default matches prior behaviour (upright when screen is above viewer)
-
-    function applyViewerMode() {
-      const flipX = (viewerMode === ViewerMode.TOP) ? Math.PI : 0;
-      globe.rotation.x = flipX;
-      cloudSphere.rotation.x = flipX;
-      citySphere.rotation.x = flipX;
-
-      const btn = document.getElementById("viewerBtn");
-      if (btn) btn.textContent = `Viewer: ${viewerMode === ViewerMode.TOP ? "Top" : "Bottom"}`;
-      setStatus(`Viewer mode: ${viewerMode === ViewerMode.TOP ? "Top" : "Bottom"}`);
-    }
-
-    function toggleViewerMode() {
-      viewerMode = (viewerMode === ViewerMode.BOTTOM) ? ViewerMode.TOP : ViewerMode.BOTTOM;
-      applyViewerMode();
-    }
+    let viewerMode = ViewerMode.BOTTOM;
 
     // =========================
     // CONSTANT LONGITUDE SHIFT (move seam to mid-Atlantic)
@@ -253,21 +233,17 @@
     // =========================
     // FINAL OUTPUT BRIGHTENING
     // =========================
-    let FINAL_GAIN = 1.70;      // B/N keys adjust. Try 1.4–2.2
-    let FINAL_CONTRAST = 1.08;  // M/, keys adjust. Try 1.0–1.2
+    let FINAL_GAIN = 1.70;
+    let FINAL_CONTRAST = 1.08;
 
     // =========================
-    // CLOCK OVERLAY (drawn on every face; does not rotate with the 3D globe)
+    // CLOCK OVERLAY
     // =========================
-    // Position in face space (after the face has been rotated into place):
-    //   -1 .. +1 spans the full face width/height.
-    // Start at the middle of the globe (0,0). Tweak to experiment.
     let CLOCK_POS_X = 0.0;
-    let CLOCK_POS_Y = -0.35;
+    let CLOCK_POS_Y = -0.35;   // your chosen position (just above centre)
 
-    // Brightness/visibility (0..3 is reasonable) and size (relative)
-    let CLOCK_GAIN  = 1.25;   // keyboard: G/F, touch: Clk+/Clk-
-    let CLOCK_SCALE = 1.00;   // keyboard: Y/U, touch: ClkSz+/ClkSz-
+    let CLOCK_GAIN  = 1.25;
+    let CLOCK_SCALE = 1.00;
 
     // =========================
     // Bright preset (scene + auto brightness)
@@ -288,7 +264,7 @@
     // HUD helper
     // =========================
     const hud = document.getElementById("hud");
-    hud.style.display = "none"; // hidden by default (H toggles)
+    hud.style.display = "none";
 
     function setStatus(msg) {
       const lines = hud.innerHTML.split("<br/>");
@@ -423,8 +399,8 @@
     const SunMode = Object.freeze({ REAL: "REAL", MANUAL: "MANUAL" });
     let sunMode = SunMode.REAL;
 
-    let sunLon = 0;  // -180..180
-    let sunLat = 0;  //  -89..89
+    let sunLon = 0;
+    let sunLat = 0;
 
     function setSunFromLonLat(lonDeg, latDeg) {
       sunLon = ((lonDeg + 540) % 360) - 180;
@@ -469,7 +445,7 @@
     setInterval(() => { if (sunMode === SunMode.REAL) updateSunFromDate(new Date()); }, 60 * 1000);
 
     // =========================
-    // Base globe (seam-safe + shifted to Atlantic seam)
+    // Base globe
     // =========================
     const globeGeo = new THREE.SphereGeometry(1, 96, 96);
 
@@ -486,7 +462,7 @@
     scene.add(globe);
 
     // =========================
-    // City lights sphere (seam-safe + shifted to Atlantic seam)
+    // City lights sphere
     // =========================
     const cityImg = await loadImage(CITY_LIGHTS_URL);
     const cityW = (cityImg.naturalWidth || cityImg.width);
@@ -555,7 +531,7 @@
     scene.add(citySphere);
 
     // =========================
-    // Cloud shader (shift seam to Atlantic)
+    // Cloud shader (shift seam)
     // =========================
     const cloudGeo = new THREE.SphereGeometry(1.006, 96, 96);
     const cloudUniforms = {
@@ -642,10 +618,26 @@
     const cloudSphere = new THREE.Mesh(cloudGeo, cloudMat);
     scene.add(cloudSphere);
 
+    function applyViewerMode() {
+      const flipX = (viewerMode === ViewerMode.TOP) ? Math.PI : 0;
+      globe.rotation.x = flipX;
+      cloudSphere.rotation.x = flipX;
+      citySphere.rotation.x = flipX;
+
+      const btn = document.getElementById("viewerBtn");
+      if (btn) btn.textContent = `Viewer: ${viewerMode === ViewerMode.TOP ? "Top" : "Bottom"}`;
+      setStatus(`Viewer mode: ${viewerMode === ViewerMode.TOP ? "Top" : "Bottom"}`);
+    }
+
+    function toggleViewerMode() {
+      viewerMode = (viewerMode === ViewerMode.BOTTOM) ? ViewerMode.TOP : ViewerMode.BOTTOM;
+      applyViewerMode();
+    }
+
     applyViewerMode();
 
     // =========================
-    // Hologram output canvas (4 views) - layout unchanged
+    // Hologram output canvas
     // =========================
     const rtSize = 1024;
     const out = document.createElement("canvas");
@@ -665,8 +657,7 @@
       return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
     }
 
-    // Draw a clock in the CURRENT face coordinate system (after ctx.rotate(p.rot)).
-    // We pre-mirror the text so it reads correctly in the reflected pyramid image.
+    // FIXED: always mirrored horizontally; position stable across viewer modes.
     function drawClockOnFace(side) {
       const t = formatClock(new Date());
 
@@ -674,20 +665,18 @@
       const x = (CLOCK_POS_X * 0.5) * side;
       const y = (CLOCK_POS_Y * 0.5) * side;
 
-      // Convert CLOCK_GAIN to a usable alpha (keeps small values visible)
       const a = Math.max(0.0, Math.min(1.0, CLOCK_GAIN / 2.0));
       if (a < 0.01) return;
 
       ctx.save();
 
-      // Mirror horizontally for the pyramid reflection.
-      // If viewerMode is TOP, also flip vertically so it reads correctly.
+      // Position first (so switching viewer mode doesn't move it)
+      ctx.translate(x, y);
+
+      // Always mirror horizontally (pre-mirror so reflection reads correctly).
+      // For TOP viewer we also flip vertically to keep it upright after reflection.
       const sy = (viewerMode === ViewerMode.TOP) ? -1 : 1;
       ctx.scale(-1, sy);
-
-      // Compensate position so it stays where you expect after the scale.
-      const dx = -x;
-      const dy = (sy === -1) ? -y : y;
 
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -699,14 +688,14 @@
       ctx.shadowOffsetX = 0;
       ctx.shadowOffsetY = 0;
 
-      // Subtle backing bar for readability
+      // Backing bar
       const metrics = ctx.measureText(t);
       const bw = Math.ceil(metrics.width + fontPx * 0.9);
       const bh = Math.ceil(fontPx * 1.35);
       ctx.fillStyle = `rgba(0,0,0,${0.28 * a})`;
       ctx.beginPath();
       const r = Math.max(8, Math.floor(fontPx * 0.28));
-      const x0 = dx - bw/2, y0 = dy - bh/2;
+      const x0 = -bw/2, y0 = -bh/2;
       ctx.moveTo(x0 + r, y0);
       ctx.arcTo(x0 + bw, y0, x0 + bw, y0 + bh, r);
       ctx.arcTo(x0 + bw, y0 + bh, x0, y0 + bh, r);
@@ -719,11 +708,11 @@
       ctx.globalAlpha = Math.max(0.10, a);
       ctx.lineWidth = Math.max(2, Math.floor(fontPx * 0.09));
       ctx.strokeStyle = "rgba(0,0,0,0.60)";
-      ctx.strokeText(t, dx, dy);
+      ctx.strokeText(t, 0, 0);
 
       ctx.globalAlpha = a;
       ctx.fillStyle = "rgba(255,255,255,1)";
-      ctx.fillText(t, dx, dy);
+      ctx.fillText(t, 0, 0);
 
       ctx.restore();
     }
@@ -752,7 +741,6 @@
         ctx.drawImage(imgCanvas, -side/2, -side/2, side, side);
         ctx.filter = "none";
 
-        // Clock overlay (all faces, does not rotate with 3D globe)
         drawClockOnFace(side);
 
         ctx.restore();
@@ -762,7 +750,7 @@
     }
 
     // =========================
-    // Fetch clouds (seam-safe + shifted)
+    // Fetch clouds
     // =========================
     async function refreshClouds() {
       const urlVis = realEarthGetMapUrl({ mapfile: VIS_MAPFILE, layer: VIS_LAYER });
@@ -827,7 +815,7 @@
       const dt = (now - last) / 1000;
       last = now;
 
-      const rotDir = (viewerMode === ViewerMode.BOTTOM) ? -1 : -1;
+      const rotDir = -1; // unchanged from your working build
 
       globe.rotation.y += rotDir * spinSpeed * dt;
       cloudSphere.rotation.y += rotDir * spinSpeed * dt;
@@ -872,7 +860,6 @@
       if (e.key === "m" || e.key === "M") { FINAL_CONTRAST = Math.min(2.0, FINAL_CONTRAST + 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
       if (e.key === "," )                 { FINAL_CONTRAST = Math.max(0.8, FINAL_CONTRAST - 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
 
-      // Clock controls
       if (e.key === "g" || e.key === "G") { CLOCK_GAIN = Math.min(3.0, CLOCK_GAIN + 0.10); setStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`); }
       if (e.key === "f" || e.key === "F") { CLOCK_GAIN = Math.max(0.0, CLOCK_GAIN - 0.10); setStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`); }
       if (e.key === "y" || e.key === "Y") { CLOCK_SCALE = Math.min(2.0, CLOCK_SCALE + 0.05); setStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`); }
@@ -900,7 +887,7 @@
     });
 
     /* ==========================================================
-       OPTION 1 + refinements: touch UI wiring (Android-safe)
+       Touch UI wiring (unchanged)
        ========================================================== */
     (function initTouchUI(){
       const uiBtn = document.getElementById("uiBtn");
@@ -1039,7 +1026,6 @@
             uiSetStatus(`Contrast: ${FINAL_CONTRAST.toFixed(2)}`);
             return;
 
-          // Clock controls
           case "clk+":
             CLOCK_GAIN = Math.min(3.0, CLOCK_GAIN + 0.10);
             uiSetStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`);
