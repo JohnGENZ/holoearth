@@ -109,7 +109,7 @@
 <body>
   <div id="hud">
     <b>HoloEarth</b> – Blue Marble + RealEarth clouds (globalvis.map day / IR night) + auto brightness + city lights
-    • keys: [ / ] size, - / = speed, C refresh, H HUD, O/P vis, K/L ir, T sun mode, arrows move sun (manual), B/N brightness, M/, contrast<br/>
+    • keys: [ / ] size, - / = speed, C refresh, H hide, O/P vis opacity, K/L ir opacity<br/>
     Status: loading…
   </div>
 
@@ -159,16 +159,24 @@
       </div>
 
       <div class="row">
+        <button id="viewerBtn" data-cmd="viewerToggle" style="grid-column: span 4;">Viewer: Bottom</button>
+      </div>
+
+      <!-- Clock controls -->
+      <div class="row">
+        <button data-cmd="clk+">Clk+</button>
+        <button data-cmd="clk-">Clk−</button>
+        <button data-cmd="clksz+">ClkSz+</button>
+        <button data-cmd="clksz-">ClkSz−</button>
+      </div>
+
+      <div class="row">
         <button class="wide" data-cmd="presetBright">Bright</button>
         <button class="wide" data-cmd="presetDemo">Demo</button>
       </div>
       <div class="row">
         <button class="wide" data-cmd="presetNight">Night</button>
         <button class="wide" data-cmd="presetReset">Reset</button>
-      </div>
-
-      <div class="row">
-        <button id="viewerBtn" data-cmd="viewerToggle" style="grid-column: span 4;">Viewer: Bottom</button>
       </div>
 
       <div class="status" id="uiStatus">Ready</div>
@@ -212,7 +220,8 @@
 
     // =========================
     // VIEWER POSITION OPTION (Top / Bottom)
-    // Bottom viewer: screen ABOVE viewer (looking UP)  -> globe is upright but rotation must be reversed
+    // =========================
+    // Bottom viewer: screen ABOVE viewer (looking UP) -> globe upright; rotation must be reversed
     // Top viewer:    screen BELOW viewer (looking DOWN)-> globe must be inverted; rotation normal
     // Toggle with key V, or via Settings panel.
     // =========================
@@ -221,14 +230,13 @@
 
     function applyViewerMode() {
       const flipX = (viewerMode === ViewerMode.TOP) ? Math.PI : 0;
-      // Flip the whole earth stack (base + clouds + city lights) to keep north-up for the chosen viewer position
-      if (typeof globe !== "undefined") globe.rotation.x = flipX;
-      if (typeof cloudSphere !== "undefined") cloudSphere.rotation.x = flipX;
-      if (typeof citySphere !== "undefined") citySphere.rotation.x = flipX;
+      globe.rotation.x = flipX;
+      cloudSphere.rotation.x = flipX;
+      citySphere.rotation.x = flipX;
 
       const btn = document.getElementById("viewerBtn");
       if (btn) btn.textContent = `Viewer: ${viewerMode === ViewerMode.TOP ? "Top" : "Bottom"}`;
-      setStatus(`Viewer mode: ${viewerMode === ViewerMode.TOP ? "Top (screen below)" : "Bottom (screen above)"}`);
+      setStatus(`Viewer mode: ${viewerMode === ViewerMode.TOP ? "Top" : "Bottom"}`);
     }
 
     function toggleViewerMode() {
@@ -239,13 +247,7 @@
     // =========================
     // CONSTANT LONGITUDE SHIFT (move seam to mid-Atlantic)
     // =========================
-    // Target seam longitude (degrees). -30 means ~30°W, middle Atlantic.
     const SEAM_LON_DEG = -30;
-
-    // Convert seam target to UV shift.
-    // Original equirectangular: u = (lon + 180) / 360.
-    // We want lon=SEAM_LON_DEG to land at u=0 seam => u' = u - u0.
-    // Use positive wrap: LON_SHIFT_U in [0..1).
     const LON_SHIFT_U = (1 - ((SEAM_LON_DEG + 180) / 360)) % 1;
 
     // =========================
@@ -253,6 +255,19 @@
     // =========================
     let FINAL_GAIN = 1.70;      // B/N keys adjust. Try 1.4–2.2
     let FINAL_CONTRAST = 1.08;  // M/, keys adjust. Try 1.0–1.2
+
+    // =========================
+    // CLOCK OVERLAY (drawn on every face; does not rotate with the 3D globe)
+    // =========================
+    // Position in face space (after the face has been rotated into place):
+    //   -1 .. +1 spans the full face width/height.
+    // Start at the middle of the globe (0,0). Tweak to experiment.
+    let CLOCK_POS_X = 0.0;
+    let CLOCK_POS_Y = -0.35;
+
+    // Brightness/visibility (0..3 is reasonable) and size (relative)
+    let CLOCK_GAIN  = 1.25;   // keyboard: G/F, touch: Clk+/Clk-
+    let CLOCK_SCALE = 1.00;   // keyboard: Y/U, touch: ClkSz+/ClkSz-
 
     // =========================
     // Bright preset (scene + auto brightness)
@@ -278,7 +293,6 @@
     function setStatus(msg) {
       const lines = hud.innerHTML.split("<br/>");
       hud.innerHTML = `${lines[0]}<br/>Status: ${msg}`;
-      // Also mirror to touch UI status (if present)
       const uiStatus = document.getElementById("uiStatus");
       const uiMini = document.getElementById("uiMini");
       if (uiStatus) uiStatus.textContent = msg;
@@ -330,7 +344,6 @@
       return c;
     }
 
-    // Seam-safe wrap by copying edge pixels (no blending).
     function bleedWrapEdges(canvas, bleedPx = 16) {
       const w = canvas.width, h = canvas.height;
       const ctx = canvas.getContext("2d", { alpha: true });
@@ -367,7 +380,6 @@
       tex.generateMipmaps = false;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
-      // keep half-texel offset in shader (uUOffset), not here
       tex.needsUpdate = true;
       return tex;
     }
@@ -381,7 +393,6 @@
       tex.generateMipmaps = false;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
-      // Apply seam shift + half texel offset for THREE's built-in UV sampling
       tex.offset.x = LON_SHIFT_U + (0.5 / c.width);
       tex.needsUpdate = true;
       return tex;
@@ -481,7 +492,7 @@
     const cityW = (cityImg.naturalWidth || cityImg.width);
     const cityH = (cityImg.naturalHeight || cityImg.height);
     const cityCanvas = bleedWrapEdges(makeCanvasFromImage(cityImg, cityW, cityH), 16);
-    const cityTex = canvasToBaseTexture(cityCanvas); // includes LON_SHIFT_U
+    const cityTex = canvasToBaseTexture(cityCanvas);
 
     const cityUniforms = {
       uNightMap: { value: cityTex },
@@ -520,7 +531,6 @@
         float lum(vec3 c){ return dot(c, vec3(0.2126,0.7152,0.0722)); }
 
         void main() {
-          // Wrap U with half-texel + constant lon shift
           vec2 uv = vec2(fract(vUv.x + uUOffset + uLonShift), vUv.y);
 
           vec3 n = normalize(vWorldNormal);
@@ -598,7 +608,6 @@
         void main() {
           if (uHasTex < 0.5) discard;
 
-          // Wrap U with half-texel + constant lon shift (moves seam to Atlantic)
           vec2 uv = vec2(fract(vUv.x + uUOffset + uLonShift), vUv.y);
 
           vec3 n = normalize(vWorldNormal);
@@ -633,7 +642,6 @@
     const cloudSphere = new THREE.Mesh(cloudGeo, cloudMat);
     scene.add(cloudSphere);
 
-    // Apply initial viewer mode (top/bottom)
     applyViewerMode();
 
     // =========================
@@ -651,6 +659,74 @@
     function resize() { out.width = window.innerWidth; out.height = window.innerHeight; }
     window.addEventListener("resize", resize);
     resize();
+
+    function pad2(n){ return (n < 10 ? "0" : "") + n; }
+    function formatClock(d = new Date()) {
+      return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+    }
+
+    // Draw a clock in the CURRENT face coordinate system (after ctx.rotate(p.rot)).
+    // We pre-mirror the text so it reads correctly in the reflected pyramid image.
+    function drawClockOnFace(side) {
+      const t = formatClock(new Date());
+
+      const fontPx = Math.max(14, Math.floor(side * 0.11 * CLOCK_SCALE));
+      const x = (CLOCK_POS_X * 0.5) * side;
+      const y = (CLOCK_POS_Y * 0.5) * side;
+
+      // Convert CLOCK_GAIN to a usable alpha (keeps small values visible)
+      const a = Math.max(0.0, Math.min(1.0, CLOCK_GAIN / 2.0));
+      if (a < 0.01) return;
+
+      ctx.save();
+
+      // Mirror horizontally for the pyramid reflection.
+      // If viewerMode is TOP, also flip vertically so it reads correctly.
+      const sy = (viewerMode === ViewerMode.TOP) ? -1 : 1;
+      ctx.scale(-1, sy);
+
+      // Compensate position so it stays where you expect after the scale.
+      const dx = -x;
+      const dy = (sy === -1) ? -y : y;
+
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = `700 ${fontPx}px ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace`;
+
+      const glow = Math.max(0, Math.min(40, Math.floor(14 * CLOCK_GAIN)));
+      ctx.shadowColor = "rgba(255,255,255,0.45)";
+      ctx.shadowBlur = glow;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 0;
+
+      // Subtle backing bar for readability
+      const metrics = ctx.measureText(t);
+      const bw = Math.ceil(metrics.width + fontPx * 0.9);
+      const bh = Math.ceil(fontPx * 1.35);
+      ctx.fillStyle = `rgba(0,0,0,${0.28 * a})`;
+      ctx.beginPath();
+      const r = Math.max(8, Math.floor(fontPx * 0.28));
+      const x0 = dx - bw/2, y0 = dy - bh/2;
+      ctx.moveTo(x0 + r, y0);
+      ctx.arcTo(x0 + bw, y0, x0 + bw, y0 + bh, r);
+      ctx.arcTo(x0 + bw, y0 + bh, x0, y0 + bh, r);
+      ctx.arcTo(x0, y0 + bh, x0, y0, r);
+      ctx.arcTo(x0, y0, x0 + bw, y0, r);
+      ctx.closePath();
+      ctx.fill();
+
+      // Outline then fill
+      ctx.globalAlpha = Math.max(0.10, a);
+      ctx.lineWidth = Math.max(2, Math.floor(fontPx * 0.09));
+      ctx.strokeStyle = "rgba(0,0,0,0.60)";
+      ctx.strokeText(t, dx, dy);
+
+      ctx.globalAlpha = a;
+      ctx.fillStyle = "rgba(255,255,255,1)";
+      ctx.fillText(t, dx, dy);
+
+      ctx.restore();
+    }
 
     function drawHologramLayout(imgCanvas) {
       const w = out.width, h = out.height;
@@ -675,6 +751,9 @@
         ctx.filter = `brightness(${FINAL_GAIN}) contrast(${FINAL_CONTRAST})`;
         ctx.drawImage(imgCanvas, -side/2, -side/2, side, side);
         ctx.filter = "none";
+
+        // Clock overlay (all faces, does not rotate with 3D globe)
+        drawClockOnFace(side);
 
         ctx.restore();
       }
@@ -793,6 +872,12 @@
       if (e.key === "m" || e.key === "M") { FINAL_CONTRAST = Math.min(2.0, FINAL_CONTRAST + 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
       if (e.key === "," )                 { FINAL_CONTRAST = Math.max(0.8, FINAL_CONTRAST - 0.05); setStatus(`FINAL contrast: ${FINAL_CONTRAST.toFixed(2)}`); }
 
+      // Clock controls
+      if (e.key === "g" || e.key === "G") { CLOCK_GAIN = Math.min(3.0, CLOCK_GAIN + 0.10); setStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`); }
+      if (e.key === "f" || e.key === "F") { CLOCK_GAIN = Math.max(0.0, CLOCK_GAIN - 0.10); setStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`); }
+      if (e.key === "y" || e.key === "Y") { CLOCK_SCALE = Math.min(2.0, CLOCK_SCALE + 0.05); setStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`); }
+      if (e.key === "u" || e.key === "U") { CLOCK_SCALE = Math.max(0.5, CLOCK_SCALE - 0.05); setStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`); }
+
       if (e.key === "t" || e.key === "T") {
         if (sunMode === SunMode.REAL) {
           sunMode = SunMode.MANUAL;
@@ -812,18 +897,10 @@
         if (e.key === "ArrowUp")    { setSunFromLonLat(sunLon, sunLat + step); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
         if (e.key === "ArrowDown")  { setSunFromLonLat(sunLon, sunLat - step); setStatus(`Sun MANUAL: Lon=${sunLon.toFixed(0)} Lat=${sunLat.toFixed(0)}`); }
       }
-
-      if (sunMode === SunMode.REAL && (e.key === "r" || e.key === "R")) {
-        updateSunFromDate(new Date());
-      }
     });
 
     /* ==========================================================
        OPTION 1 + refinements: touch UI wiring (Android-safe)
-       - pointerup (reliable on Android)
-       - single gear toggle handler (no conflicts)
-       - auto-hide after 3s (interaction resets)
-       - presets (Bright / Demo / Night / Reset)
        ========================================================== */
     (function initTouchUI(){
       const uiBtn = document.getElementById("uiBtn");
@@ -865,18 +942,18 @@
         else hidePanel();
       }
 
-      // Default state: collapsed
       hidePanel();
       uiSetStatus("Ready");
 
-      // Snapshot defaults for preset reset
       const PRESET_DEFAULTS = {
         FINAL_GAIN,
         FINAL_CONTRAST,
         visOpacity,
         irOpacity,
         globeScale,
-        spinSpeed
+        spinSpeed,
+        CLOCK_GAIN,
+        CLOCK_SCALE
       };
 
       function applyPreset(which) {
@@ -909,6 +986,8 @@
           irOpacity  = PRESET_DEFAULTS.irOpacity;
           globeScale = PRESET_DEFAULTS.globeScale;
           spinSpeed  = PRESET_DEFAULTS.spinSpeed;
+          CLOCK_GAIN = PRESET_DEFAULTS.CLOCK_GAIN;
+          CLOCK_SCALE = PRESET_DEFAULTS.CLOCK_SCALE;
           cloudUniforms.uVisOpacity.value = visOpacity;
           cloudUniforms.uIrOpacity.value  = irOpacity;
           uiSetStatus("Preset Reset");
@@ -958,6 +1037,24 @@
           case "contrast-":
             FINAL_CONTRAST = Math.max(0.8, FINAL_CONTRAST - 0.05);
             uiSetStatus(`Contrast: ${FINAL_CONTRAST.toFixed(2)}`);
+            return;
+
+          // Clock controls
+          case "clk+":
+            CLOCK_GAIN = Math.min(3.0, CLOCK_GAIN + 0.10);
+            uiSetStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`);
+            return;
+          case "clk-":
+            CLOCK_GAIN = Math.max(0.0, CLOCK_GAIN - 0.10);
+            uiSetStatus(`Clock brightness: ${CLOCK_GAIN.toFixed(2)}`);
+            return;
+          case "clksz+":
+            CLOCK_SCALE = Math.min(2.0, CLOCK_SCALE + 0.05);
+            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`);
+            return;
+          case "clksz-":
+            CLOCK_SCALE = Math.max(0.5, CLOCK_SCALE - 0.05);
+            uiSetStatus(`Clock size: ${CLOCK_SCALE.toFixed(2)}`);
             return;
 
           case "size+":
@@ -1047,14 +1144,12 @@
         }
       }
 
-      // Gear toggle: pointerup is most reliable on Android
       uiBtn.addEventListener("pointerup", (e) => {
         e.preventDefault();
         e.stopPropagation();
         togglePanel();
       }, { passive: false });
 
-      // Panel buttons: pointerup
       uiPanel.addEventListener("pointerup", (ev) => {
         const btn = ev.target.closest("button[data-cmd]");
         if (!btn) return;
@@ -1063,7 +1158,6 @@
         runCmd(btn.getAttribute("data-cmd"));
       }, { passive: false });
 
-      // Keep panel alive while interacting (auto-hide refinement #1)
       ["pointerdown", "pointermove", "touchstart", "wheel"].forEach(evtName => {
         uiPanel.addEventListener(evtName, () => armAutoHide(), { passive: true });
         uiBtn.addEventListener(evtName, () => armAutoHide(), { passive: true });
