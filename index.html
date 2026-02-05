@@ -675,10 +675,11 @@
 
       ctx.save();
 
-      // Mirror horizontally for the pyramid reflection.
-      // If viewerMode is TOP, also flip vertically so it reads correctly.
+      // Always pre-mirror horizontally for pyramid reflection.
+      // Ensure Bottom mode is mirrored too.
       const sy = (viewerMode === ViewerMode.TOP) ? -1 : 1;
-      ctx.scale(-1, sy);
+      const sx = (viewerMode === ViewerMode.BOTTOM) ? -1 : 1; // keep mirrored in Bottom
+      ctx.scale(sx, sy);
 
       // Compensate position so it stays where you expect after the scale.
       const dx = -x;
